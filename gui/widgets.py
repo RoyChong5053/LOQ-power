@@ -46,7 +46,18 @@ class PowerCard(Gtk.Box):
         self.slider.set_draw_value(False)
         self.slider.set_hexpand(True)
         self.slider.set_size_request(200, -1)
+        self.slider.set_focus_on_click(False)
         self.slider.connect("value-changed", self._on_slider_changed)
+
+        # Allow scroll events to pass through to ScrolledWindow
+        # unless slider is being actively dragged
+        scroll_ctrl = Gtk.EventControllerScroll.new(
+            Gtk.EventControllerScrollFlags.VERTICAL
+        )
+        scroll_ctrl.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        scroll_ctrl.connect("scroll", self._on_slider_scroll)
+        self.slider.add_controller(scroll_ctrl)
+
         self.append(self.slider)
 
         # Footer row: min, default, max
@@ -91,6 +102,12 @@ class PowerCard(Gtk.Box):
         self.value_label.set_text(f"{val}{self.unit}")
         if self._changed_callback:
             self._changed_callback(val)
+
+    def _on_slider_scroll(self, controller, x, y):
+        # Always return False to let scroll events pass through
+        # to the parent ScrolledWindow. Slider is adjusted by
+        # click-drag only.
+        return False
 
 
 class SectionHeader(Gtk.Box):
