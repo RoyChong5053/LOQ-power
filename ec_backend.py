@@ -469,6 +469,39 @@ def read_service_status(service_name):
 
 # ── System dashboard data ───────────────────────────────────────
 
+def read_battery_charge_type():
+    """Read current battery charge type (Fast/Standard/Long_Life)."""
+    for ps_dir in os.listdir("/sys/class/power_supply"):
+        if not ps_dir.startswith("BAT"):
+            continue
+        ps_path = os.path.join("/sys/class/power_supply", ps_dir)
+        ct = _read_file(os.path.join(ps_path, "charge_types"))
+        if ct:
+            # Format: "Fast Standard [Long_Life]" - brackets show current
+            current = None
+            available = []
+            for token in ct.split():
+                if token.startswith("[") and token.endswith("]"):
+                    current = token.strip("[]")
+                    available.append(current)
+                else:
+                    available.append(token)
+            return current, available
+    return None, []
+
+
+def set_battery_charge_type(charge_type):
+    """Set battery charge type. Requires sudo."""
+    for ps_dir in os.listdir("/sys/class/power_supply"):
+        if not ps_dir.startswith("BAT"):
+            continue
+        ps_path = os.path.join("/sys/class/power_supply", ps_dir)
+        ct_path = os.path.join(ps_path, "charge_types")
+        if os.path.isfile(ct_path):
+            return _write_file_sudo(ct_path, charge_type)
+    return False, "Battery charge_types not found"
+
+
 def read_dashboard():
     """Read all dashboard data in one call for efficiency."""
     gpu = read_gpu_full()
@@ -481,6 +514,7 @@ def read_dashboard():
     tlp = read_service_status("tlp")
     nv_powerd = read_service_status("nvidia-powerd")
     mode = read_platform_profile()
+    charge_type, charge_choices = read_battery_charge_type()
 
     return {
         "gpu": gpu,
@@ -494,4 +528,6 @@ def read_dashboard():
         "tlp": tlp,
         "nv_powerd": nv_powerd,
         "mode": mode,
+        "charge_type": charge_type,
+        "charge_choices": charge_choices,
     }

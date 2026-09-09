@@ -8,8 +8,9 @@ from gi.repository import Gtk, Gdk, GLib
 class PowerCard(Gtk.Box):
     """A card widget for a single power parameter with label, value, and slider."""
 
-    def __init__(self, title, unit="W", min_val=0, max_val=100, current=None, default=None):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    def __init__(self, title, unit="W", min_val=0, max_val=100,
+                 current=None, default=None, description=None):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         self.unit = unit
         self.min_val = min_val
         self.max_val = max_val
@@ -19,8 +20,8 @@ class PowerCard(Gtk.Box):
         self.add_css_class("power-card")
         self.set_margin_start(12)
         self.set_margin_end(12)
-        self.set_margin_top(8)
-        self.set_margin_bottom(8)
+        self.set_margin_top(6)
+        self.set_margin_bottom(6)
 
         # Header row: title + value label
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -39,6 +40,14 @@ class PowerCard(Gtk.Box):
         self.value_label.add_css_class("dim-label")
         header.append(self.value_label)
 
+        # Description row
+        if description:
+            desc_label = Gtk.Label(label=description, xalign=0)
+            desc_label.add_css_class("caption")
+            desc_label.add_css_class("dim-label")
+            desc_label.add_css_class("slider-desc")
+            self.append(desc_label)
+
         # Slider
         self.slider = Gtk.Scale.new_with_range(
             Gtk.Orientation.HORIZONTAL, min_val, max_val, 1
@@ -50,7 +59,6 @@ class PowerCard(Gtk.Box):
         self.slider.connect("value-changed", self._on_slider_changed)
 
         # Allow scroll events to pass through to ScrolledWindow
-        # unless slider is being actively dragged
         scroll_ctrl = Gtk.EventControllerScroll.new(
             Gtk.EventControllerScrollFlags.VERTICAL
         )
@@ -60,7 +68,7 @@ class PowerCard(Gtk.Box):
 
         self.append(self.slider)
 
-        # Footer row: min, default, max
+        # Footer row: range info
         footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         self.append(footer)
 
@@ -104,9 +112,6 @@ class PowerCard(Gtk.Box):
             self._changed_callback(val)
 
     def _on_slider_scroll(self, controller, x, y):
-        # Always return False to let scroll events pass through
-        # to the parent ScrolledWindow. Slider is adjusted by
-        # click-drag only.
         return False
 
 
@@ -166,8 +171,10 @@ class DashboardRow(Gtk.Box):
 
     def __init__(self, label_text, value_text="--"):
         super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.set_margin_top(1)
-        self.set_margin_bottom(1)
+        self.set_margin_top(2)
+        self.set_margin_bottom(2)
+        self.set_margin_start(4)
+        self.set_margin_end(4)
 
         self._label = Gtk.Label(label=label_text, xalign=0)
         self._label.set_hexpand(True)
@@ -200,19 +207,24 @@ class DashboardCard(Gtk.Box):
 
         # Section header
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        header.set_margin_start(8)
+        header.set_margin_top(4)
+        header.set_margin_bottom(2)
         self.append(header)
 
         icon = Gtk.Image.new_from_icon_name(icon_name)
-        icon.set_pixel_size(14)
+        icon.set_pixel_size(16)
         header.append(icon)
 
         label = Gtk.Label(label=title, xalign=0)
         label.add_css_class("title-4")
         header.append(label)
 
-        # Rows container
+        # Rows container with border
         self._rows_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self._rows_box.set_margin_start(20)
+        self._rows_box.set_margin_start(24)
+        self._rows_box.set_margin_end(8)
+        self._rows_box.set_margin_bottom(4)
         self.append(self._rows_box)
 
         self._rows = {}
@@ -226,3 +238,72 @@ class DashboardCard(Gtk.Box):
     def set_value(self, key, text):
         if key in self._rows:
             self._rows[key].set_value(text)
+
+
+class ThermalBanner(Gtk.Box):
+    """A colored banner showing the current thermal mode with LED color."""
+
+    MODE_STYLES = {
+        "low-power":  {"color": "#3584e4", "css": "mode-quiet",    "label": "省电", "led": "蓝灯"},
+        "balanced":   {"color": "#ffffff", "css": "mode-balanced", "label": "均衡", "led": "白灯"},
+        "performance":{"color": "#e01b24", "css": "mode-perf",     "label": "性能", "led": "红灯"},
+        "max-power":  {"color": "#ff7800", "css": "mode-extreme",  "label": "极速", "led": "紫灯"},
+        "custom":     {"color": "#9141ac", "css": "mode-custom",   "label": "自定义", "led": "紫灯"},
+    }
+
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.set_margin_start(12)
+        self.set_margin_end(12)
+        self.set_margin_top(10)
+        self.set_margin_bottom(6)
+        self.add_css_class("osd")
+        self.add_css_class("thermal-banner")
+
+        # LED color indicator dot
+        self._dot = Gtk.DrawingArea()
+        self._dot.set_size_request(12, 12)
+        self._dot.set_halign(Gtk.Align.CENTER)
+        self._dot.set_valign(Gtk.Align.CENTER)
+        self.append(self._dot)
+
+        self._label = Gtk.Label(label="检测中...", xalign=0, wrap=True)
+        self._label.set_hexpand(True)
+        self.append(self._label)
+
+        self._current_mode = None
+
+    def set_mode(self, mode, custom_active=False):
+        """Update banner for the given mode.
+
+        Args:
+            mode: The Fn+Q mode (low-power/balanced/performance/max-power)
+            custom_active: Whether CUSTOM mode is active for EC writes
+        """
+        self._current_mode = mode
+        info = self.MODE_STYLES.get(mode, self.MODE_STYLES["balanced"])
+
+        # Remove old mode CSS classes
+        for m_info in self.MODE_STYLES.values():
+            self.remove_css_class(m_info["css"])
+
+        # Set new mode CSS class
+        self.add_css_class(info["css"])
+
+        # Update dot color via CSS
+        self._dot.remove_css_class("dot-quiet")
+        self._dot.remove_css_class("dot-balanced")
+        self._dot.remove_css_class("dot-perf")
+        self._dot.remove_css_class("dot-extreme")
+        self._dot.remove_css_class("dot-custom")
+        self._dot.add_css_class(f"dot-{info['css'].replace('mode-', '')}")
+
+        # Build label text
+        if custom_active:
+            self._label.set_text(
+                f"{info['led']} {info['label']}模式  ✓ EC 功率已激活"
+            )
+        else:
+            self._label.set_text(
+                f"{info['led']} {info['label']}模式"
+            )

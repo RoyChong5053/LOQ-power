@@ -3,9 +3,25 @@
 import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib
-from gui.widgets import PowerCard, SectionHeader, StatusRow, ProfileButton, DashboardCard
+from gui.widgets import (PowerCard, SectionHeader, StatusRow, ProfileButton,
+                         DashboardCard, ThermalBanner)
 import ec_backend
 import profiles as prof
+
+
+# EC attribute descriptions for slider tooltips
+EC_DESCRIPTIONS = {
+    "gpu_nv_ctgp": "可配置总图形功率，影响 GPU 最大功耗上限。提高可增加 GPU 性能，降低可减少发热",
+    "gpu_nv_ppab": "功率加速，在 GPU 高负载时临时额外分配的功率。数值越大，短时性能爆发越强",
+    "gpu_nv_ac_offset": "电源适配器接入时的功率偏移。接电源时可分配更多功率给 GPU",
+    "gpu_nv_cpu_boost": "GPU 活跃时动态分配给 CPU 的额外功率。游戏时提升 CPU 性能",
+    "gpu_temp": "GPU 温度墙，达到此温度后 GPU 开始降频。降低可保护 GPU 但影响持续性能",
+    "ppt_pl1_spl": "CPU 持续功率限制，长时间负载的最大功耗。降低可减少发热和风扇噪音",
+    "ppt_pl2_sppt": "CPU 短时功率限制，Turbo Boost 时的最大功耗。允许短时间更高性能",
+    "ppt_pl3_fppt": "CPU 快速功率跟踪，最短时间内的峰值功率。影响单线程突发性能",
+    "ppt_cpu_cl": "GPU 活跃时的 CPU 功率限制。游戏时控制 CPU 功耗分配",
+    "cpu_temp": "CPU 温度墙，达到此温度后 CPU 开始降频。降低可减少发热但影响持续性能",
+}
 
 
 class PowerPage(Gtk.Box):
@@ -33,22 +49,9 @@ class PowerPage(Gtk.Box):
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         scroll.set_child(content)
 
-        # ── Thermal mode banner ──
-        self.thermal_banner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.thermal_banner.set_margin_start(12)
-        self.thermal_banner.set_margin_end(12)
-        self.thermal_banner.set_margin_top(10)
-        self.thermal_banner.set_margin_bottom(6)
-        self.thermal_banner.add_css_class("osd")
+        # ── Thermal mode banner (new colored banner) ──
+        self.thermal_banner = ThermalBanner()
         content.append(self.thermal_banner)
-
-        self.thermal_icon = Gtk.Image.new_from_icon_name("dialog-information-symbolic")
-        self.thermal_icon.set_pixel_size(16)
-        self.thermal_banner.append(self.thermal_icon)
-
-        self.thermal_label = Gtk.Label(label="检测中...", xalign=0, wrap=True)
-        self.thermal_label.set_hexpand(True)
-        self.thermal_banner.append(self.thermal_label)
 
         # ── Profile bar ──
         profile_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -98,24 +101,24 @@ class PowerPage(Gtk.Box):
         self.sys_card = DashboardCard("computer", "系统")
         self.sys_card.add_row("fan", "风扇")
         self.sys_card.add_row("battery", "电池")
+        self.sys_card.add_row("charge", "充电模式")
         self.sys_card.add_row("ac", "电源")
         self.sys_card.add_row("tlp", "TLP")
         self.sys_card.add_row("nv_powerd", "nvidia-powerd")
-        self.sys_card.add_row("mode", "热模式")
         content.append(self.sys_card)
 
         # ── GPU section ──
         content.append(SectionHeader("gpu", "GPU 功率控制"))
 
         gpu_attrs = [
-            ("gpu_nv_ctgp", "GPU cTGP (可配置总功率)", "W"),
-            ("gpu_nv_ppab", "GPU PPAB (功率加速)", "W"),
-            ("gpu_nv_ac_offset", "GPU AC Offset (总功率偏移)", "W"),
-            ("gpu_nv_cpu_boost", "GPU→CPU Dynamic Boost", "W"),
-            ("gpu_temp", "GPU 温度限制", "°C"),
+            ("gpu_nv_ctgp", "GPU cTGP", "W", "可配置总图形功率，影响 GPU 最大功耗上限"),
+            ("gpu_nv_ppab", "GPU PPAB", "W", "功率加速，GPU 高负载时临时额外功率"),
+            ("gpu_nv_ac_offset", "GPU AC Offset", "W", "电源适配器接入时的功率偏移"),
+            ("gpu_nv_cpu_boost", "GPU→CPU Boost", "W", "GPU 活跃时动态分配给 CPU 的额外功率"),
+            ("gpu_temp", "GPU 温度限制", "°C", "GPU 降频温度墙，达到后开始降频"),
         ]
-        for attr_name, title, unit in gpu_attrs:
-            card = PowerCard(title, unit)
+        for attr_name, title, unit, desc in gpu_attrs:
+            card = PowerCard(title, unit, description=desc)
             self.cards[attr_name] = card
             content.append(card)
 
@@ -123,47 +126,88 @@ class PowerPage(Gtk.Box):
         content.append(SectionHeader("cpu", "CPU 功率控制"))
 
         cpu_ec_attrs = [
-            ("ppt_pl1_spl", "CPU PL1 (持续功率)", "W"),
-            ("ppt_pl2_sppt", "CPU PL2 (短时功率)", "W"),
-            ("ppt_pl3_fppt", "CPU PL3 (快速功率)", "W"),
-            ("ppt_cpu_cl", "CPU 交叉负载功率", "W"),
-            ("cpu_temp", "CPU 温度限制", "°C"),
+            ("ppt_pl1_spl", "CPU PL1", "W", "持续功率限制，长时间负载的最大功耗"),
+            ("ppt_pl2_sppt", "CPU PL2", "W", "短时功率限制，Turbo Boost 时的最大功耗"),
+            ("ppt_pl3_fppt", "CPU PL3", "W", "快速功率跟踪，最短时间内的峰值功率"),
+            ("ppt_cpu_cl", "CPU 交叉负载", "W", "GPU 活跃时的 CPU 功率限制"),
+            ("cpu_temp", "CPU 温度限制", "°C", "CPU 降频温度墙，达到后开始降频"),
         ]
-        for attr_name, title, unit in cpu_ec_attrs:
-            card = PowerCard(title, unit)
+        for attr_name, title, unit, desc in cpu_ec_attrs:
+            card = PowerCard(title, unit, description=desc)
             self.cards[attr_name] = card
             content.append(card)
 
         # ── CPU frequency section ──
         content.append(SectionHeader("power-system", "CPU 频率控制"))
 
-        self.freq_card = PowerCard("CPU 最大频率", "MHz", 400, 5000)
+        self.freq_card = PowerCard(
+            "CPU 最大频率", "MHz", 400, 5000,
+            description="CPU 允许达到的最大频率，降低可减少发热和风扇噪音"
+        )
         content.append(self.freq_card)
 
-        # Governor row
-        gov_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        gov_box.set_margin_start(12)
-        gov_box.set_margin_end(12)
-        gov_box.set_margin_top(8)
-        content.append(gov_box)
+        # ── Advanced options (collapsed) ──
+        content.append(SectionHeader("emblem-system", "高级选项"))
 
-        gov_label = Gtk.Label(label="调频策略:", xalign=0)
-        gov_label.add_css_class("dim-label")
-        gov_box.append(gov_label)
+        # Collapsible advanced section
+        self._advanced_expanded = False
+        self._advanced_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._advanced_box.set_margin_start(12)
+        self._advanced_box.set_margin_end(12)
+        self._advanced_box.set_margin_bottom(8)
+        content.append(self._advanced_box)
+
+        # Toggle button for advanced options
+        adv_toggle = Gtk.Button(label="▶ 展开高级选项")
+        adv_toggle.add_css_class("flat")
+        adv_toggle.set_halign(Gtk.Align.START)
+        adv_toggle.connect("clicked", self._toggle_advanced)
+        self._advanced_toggle = adv_toggle
+        self._advanced_box.append(adv_toggle)
+
+        # Advanced content (initially hidden)
+        self._advanced_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self._advanced_content.set_margin_top(8)
+        self._advanced_content.set_visible(False)
+        self._advanced_box.append(self._advanced_content)
+
+        # Governor
+        gov_frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._advanced_content.append(gov_frame)
+
+        gov_label = Gtk.Label(label="调频策略 (CPU Governor)", xalign=0)
+        gov_label.add_css_class("title-4")
+        gov_frame.append(gov_label)
+
+        gov_desc = Gtk.Label(
+            label="performance: 始终最高频率 | powersave: 省电优先",
+            xalign=0, wrap=True
+        )
+        gov_desc.add_css_class("caption")
+        gov_desc.add_css_class("dim-label")
+        gov_frame.append(gov_desc)
 
         self.gov_combo = Gtk.ComboBoxText()
         self.gov_combo.append_text("performance")
         self.gov_combo.append_text("powersave")
         self.gov_combo.set_active(0)
-        gov_box.append(self.gov_combo)
+        gov_frame.append(self.gov_combo)
 
-        spacer = Gtk.Box()
-        spacer.set_hexpand(True)
-        gov_box.append(spacer)
+        # EPP
+        epp_frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._advanced_content.append(epp_frame)
 
-        epp_label = Gtk.Label(label="能效偏好:", xalign=0)
-        epp_label.add_css_class("dim-label")
-        gov_box.append(epp_label)
+        epp_label = Gtk.Label(label="能效偏好 (Energy Performance Preference)", xalign=0)
+        epp_label.add_css_class("title-4")
+        epp_frame.append(epp_label)
+
+        epp_desc = Gtk.Label(
+            label="performance: 性能优先 | balance_performance: 偏性能 | balance_power: 偏省电 | power: 省电优先",
+            xalign=0, wrap=True
+        )
+        epp_desc.add_css_class("caption")
+        epp_desc.add_css_class("dim-label")
+        epp_frame.append(epp_desc)
 
         self.epp_combo = Gtk.ComboBoxText()
         self.epp_combo.append_text("performance")
@@ -171,25 +215,29 @@ class PowerPage(Gtk.Box):
         self.epp_combo.append_text("balance_power")
         self.epp_combo.append_text("power")
         self.epp_combo.set_active(0)
-        gov_box.append(self.epp_combo)
+        epp_frame.append(self.epp_combo)
 
-        # Platform profile row
-        pp_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        pp_box.set_margin_start(12)
-        pp_box.set_margin_end(12)
-        pp_box.set_margin_top(4)
-        pp_box.set_margin_bottom(8)
-        content.append(pp_box)
+        # Platform profile
+        pp_frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self._advanced_content.append(pp_frame)
 
-        pp_label = Gtk.Label(label="平台配置:", xalign=0)
-        pp_label.add_css_class("dim-label")
-        pp_box.append(pp_label)
+        pp_label = Gtk.Label(label="平台配置 (Platform Profile)", xalign=0)
+        pp_label.add_css_class("title-4")
+        pp_frame.append(pp_label)
+
+        pp_desc = Gtk.Label(
+            label="控制 EC 整体热策略。应用设置时会自动切换到 custom 模式",
+            xalign=0, wrap=True
+        )
+        pp_desc.add_css_class("caption")
+        pp_desc.add_css_class("dim-label")
+        pp_frame.append(pp_desc)
 
         self.pp_combo = Gtk.ComboBoxText()
         for choice in ("low-power", "balanced", "performance", "max-power"):
             self.pp_combo.append_text(choice)
         self.pp_combo.set_active(1)
-        pp_box.append(self.pp_combo)
+        pp_frame.append(self.pp_combo)
 
         # Bottom padding
         bottom_pad = Gtk.Box()
@@ -198,6 +246,13 @@ class PowerPage(Gtk.Box):
 
         self.refresh()
         self.start_auto_refresh()
+
+    def _toggle_advanced(self, btn):
+        self._advanced_expanded = not self._advanced_expanded
+        self._advanced_content.set_visible(self._advanced_expanded)
+        self._advanced_toggle.set_label(
+            "▼ 收起高级选项" if self._advanced_expanded else "▶ 展开高级选项"
+        )
 
     def start_auto_refresh(self):
         """Start auto-refreshing dashboard data every 3 seconds."""
@@ -216,28 +271,16 @@ class PowerPage(Gtk.Box):
             self._refresh_dashboard()
         return True  # Continue polling
 
-    def _update_thermal_banner(self, mode):
-        """Update the thermal mode banner based on current state."""
-        if mode == "custom":
-            self.thermal_icon.set_from_icon_name("emblem-ok-symbolic")
-            self.thermal_label.set_text("CUSTOM 模式 - EC 功率限制可写入")
-            self.thermal_banner.remove_css_class("warning")
-            self.thermal_banner.add_css_class("success")
-        else:
-            self.thermal_icon.set_from_icon_name("dialog-warning-symbolic")
-            self.thermal_label.set_text(
-                f"当前: {mode} - EC 功率限制只读\n"
-                "点击「应用」时会自动切换到 CUSTOM 模式"
-            )
-            self.thermal_banner.remove_css_class("success")
-            self.thermal_banner.add_css_class("warning")
-
     def _refresh_dashboard(self):
         """Refresh only the dashboard status cards (fast, no sliders)."""
         d = ec_backend.read_dashboard()
 
         # Thermal banner
-        self._update_thermal_banner(d["mode"])
+        mode = d["mode"]
+        custom_active = (mode == "custom")
+        # Determine the Fn+Q mode (what LED shows)
+        fnq_mode = mode if mode in ("low-power", "balanced", "performance", "max-power") else "balanced"
+        self.thermal_banner.set_mode(fnq_mode, custom_active)
 
         # GPU card
         gpu = d["gpu"]
@@ -291,6 +334,15 @@ class PowerPage(Gtk.Box):
         else:
             self.sys_card.set_value("battery", "N/A")
 
+        # Battery charge type
+        charge = d.get("charge_type")
+        charge_map = {
+            "Fast": "快速充电",
+            "Standard": "标准充电",
+            "Long_Life": "长寿模式 (80%)",
+        }
+        self.sys_card.set_value("charge", charge_map.get(charge, charge or "N/A"))
+
         ac = d["ac_power"]
         self.sys_card.set_value("ac", "AC 通电" if ac else "电池供电" if ac is not None else "N/A")
 
@@ -299,16 +351,6 @@ class PowerPage(Gtk.Box):
 
         nv = d["nv_powerd"]
         self.sys_card.set_value("nv_powerd", "active" if nv else "inactive" if nv is not None else "N/A")
-
-        mode = d["mode"]
-        mode_labels = {
-            "custom": "CUSTOM ✓",
-            "balanced": "均衡",
-            "performance": "性能",
-            "max-power": "极速",
-            "low-power": "静音",
-        }
-        self.sys_card.set_value("mode", mode_labels.get(mode, mode or "N/A"))
 
     def refresh(self):
         """Reload all values from hardware."""

@@ -10,21 +10,25 @@ EC 固件功率管理工具，适用于 Lenovo LOQ 15ARP9 (83JC) 笔记本 (Linu
 
 ```
 ┌─ 热模式横幅 ─────────────────────────┐
-│ CUSTOM 模式 - EC 功率限制可写入      │
+│ ⚪ 白灯 均衡模式  ✓ EC 功率已激活    │
 └──────────────────────────────────────┘
 ┌─ 系统状态 ───────────────────────────┐
 │ GPU: 功耗 3.3W / 温度 45°C / 利用率 25% │
 │ CPU: 频率 4000MHz / 温度 52°C        │
 │ 系统: 风扇 2300RPM / 电池 79%        │
+│      充电: 长寿模式 (80%)            │
 └──────────────────────────────────────┘
 ┌─ GPU 功率控制 ───────────────────────┐
 │  GPU cTGP     [========] 60W        │
+│  可配置总图形功率，影响 GPU 最大功耗上限 │
+│  55W                        105W    │
 │  GPU PPAB     [========] 25W        │
+│  功率加速，GPU 高负载时临时额外功率   │
 │  ...                                 │
 └──────────────────────────────────────┘
 ┌─ CPU 功率控制 ───────────────────────┐
 │  CPU PL1      [========] 45W        │
-│  CPU PL2      [========] 50W        │
+│  持续功率限制，长时间负载的最大功耗   │
 │  ...                                 │
 └──────────────────────────────────────┘
 ```
@@ -89,11 +93,23 @@ python3 main.py
 | CPU 交叉负载 | 30-45W | GPU 活动时 CPU 功率 |
 | CPU 温度限制 | 85-100°C | CPU 降频温度墙 |
 
+每个滑块都有详细的参数说明，帮助理解每个设置的作用。
+
 ### CPU 频率控制
 
 - 最大频率限制 (400-5000 MHz)
-- 调频策略: performance / powersave
-- 能效偏好: performance / balance_performance / balance_power / power
+- 高级选项 (可折叠): 调频策略、能效偏好、平台配置
+
+### 电池管理
+
+- 充电模式切换: Fast (快速充电) / Standard (标准) / Long_Life (长寿80%)
+- 实时电池状态: 电量、充电状态、电压
+
+### 热模式横幅
+
+- LED 颜色指示: 🔵蓝灯=省电 ⚪白灯=均衡 🔴红灯=性能 🟣紫灯=极速
+- 自动检测 CUSTOM 模式状态
+- 显示 EC 功率是否已激活
 
 ### 方案管理
 
@@ -103,7 +119,7 @@ python3 main.py
 
 ## 关键发现
 
-### CUSTOM 模式
+### Fn+Q vs 软件写入
 
 EC 功率限制写入需要 CUSTOM 热模式 (0xFF)。LOQ 的 Fn+Q 不会切换到 CUSTOM，
 但 gamezone WMI 驱动有一个 platform-profile 接口可以直接写入:
@@ -116,7 +132,10 @@ cat /sys/bus/wmi/drivers/lenovo_wmi_gamezone/*/platform-profile/platform-profile
 echo "custom" | sudo tee /sys/bus/wmi/drivers/lenovo_wmi_gamezone/*/platform-profile/platform-profile-0/profile
 ```
 
-应用设置时会自动切换到 CUSTOM 模式，无需手动操作。
+**重要发现:**
+- Fn+Q 是硬件中断，同时改变 LED 颜色和风扇策略
+- 软件写入是 WMI 调用，只改变 thermal_mode，不影响 LED 和风扇
+- Custom 模式下 LED 保持上次 Fn+Q 的颜色，风扇行为也保持不变
 
 ### EC vs Windows
 

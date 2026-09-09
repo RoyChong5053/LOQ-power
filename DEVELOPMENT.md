@@ -93,25 +93,69 @@ Fn+Q 在 LOQ 上的循环: quiet → balanced → performance → max-power → 
 echo "custom" | sudo tee /sys/bus/wmi/drivers/lenovo_wmi_gamezone/.../platform-profile-0/profile
 ```
 
-### 3.3 自动切换
+### 3.3 关键发现: Fn+Q vs 软件写入
 
-应用设置时自动调用 `ensure_custom_mode()`:
+**这是项目最重要的发现之一:**
 
-```python
-def ensure_custom_mode():
-    if is_custom_mode():
-        return True, ""
-    ok, err = set_platform_profile("custom")
-    # 验证切换成功
-    if not is_custom_mode():
-        return False, "Switched but CUSTOM mode not confirmed"
-    return False, ""
+| | Fn+Q (硬件中断) | 软件写 platform-profile |
+|---|---|---|
+| **触发方式** | 按键 → EC 中断 | WMI 调用 → EC |
+| **LED 颜色** | ✅ 会变 | ❌ 不变 |
+| **风扇策略** | ✅ 会变 | ❌ 不变 |
+| **thermal_mode** | ✅ 会设 | ✅ 会设 |
+| **EC 值可写** | ❌ 仅 custom 时 | ✅ 设了 custom 就行 |
+
+**Fn+Q 的路径:**
+```
+Fn+Q → EC 中断 → gamezone driver → thermal_mode_notify()
+→ 同时做三件事:
+  a) 切换 EC 内部热策略 (风扇曲线/功率分配)
+  b) 改变 LED 颜色
+  c) 设置 thermal_mode 寄存器
 ```
 
-### 3.4 风扇行为
+**软件写入的路径:**
+```
+echo custom > profile → gamezone platform_profile_set()
+→ WMI 调用 → EC
+→ EC 只做一件事: 设置 thermal_mode 寄存器
+→ 不触发 LED 变化 (因为不是 Fn+Q 中断)
+→ 不触发风扇策略变化 (因为 EC 内部策略由 Fn+Q 决定)
+```
+
+### 3.4 LED 颜色映射
+
+| Fn+Q 模式 | LED 颜色 | 风扇行为 | EC 热策略 |
+|-----------|----------|----------|-----------|
+| low-power | 🔵 蓝灯 | 安静 | 激进省电 |
+| balanced | ⚪ 白灯 | 正常 | 均衡 |
+| performance | 🔴 红灯 | 积极 | 性能优先 |
+| max-power | 🟣 紫灯 | 全速 | 最大性能 |
+| custom | 🟣 紫灯 | 取决于 Fn+Q | 取决于 Fn+Q |
+
+**关键发现:**
+- Custom 模式在软件切换后，LED 颜色保持上次 Fn+Q 的颜色
+- 风扇行为也保持上次 Fn+Q 的策略
+- EC 值变得可写 (因为 mode==CUSTOM)
+
+### 3.5 应用架构
+
+基于上述发现，我们的应用架构:
+
+1. 用户用 Fn+Q 选择想要的风扇/LED 模式
+2. 我们的工具应用时: 切 custom → 写 EC 值 → (可选)切回原模式
+3. EC 值写入后持久保存，即使之后切回 balanced/performance 也保持
+
+**简化后的理解:**
+- Custom 模式 = 骗过内核检查的"后门"
+- Fn+Q = 用户控制风扇/LED 的界面
+- EC 值 = 持久保存的功率参数
+
+### 3.6 风扇行为
 
 - **max-power 模式**: EC 等待 Lenovo 软件发送风扇曲线 → 未收到 → 安全模式 → 风扇全速
 - **custom 模式**: EC 行为不同，不强制风扇全速，正常温控
+- **其他模式**: EC 使用内部预设的风扇策略
 
 ## 4. WMI 接口
 
@@ -181,6 +225,41 @@ nvidia-smi --query-gpu=name,temperature.gpu,utilization.gpu,utilization.memory,m
 
 ```
 /sys/class/thermal/thermal_zone0/temp  # 值需除以 1000
+```
+
+### 6.3 电池充电模式
+
+Lenovo LOQ 支持三种电池充电模式，通过 `charge_types` 控制:
+
+```
+/sys/class/power_supply/BAT1/charge_types
+# 输出: "Fast Standard [Long_Life]"
+# 方括号 [] 表示当前激活的模式
+```
+
+| 模式 | 说明 | 充电上限 |
+|------|------|----------|
+| Fast | 快速充电 | 100% |
+| Standard | 标准充电 | 100% |
+| Long_Life | 长寿模式 | 80% |
+
+读取当前模式:
+```python
+def read_battery_charge_type():
+    ct = read_file("/sys/class/power_supply/BAT1/charge_types")
+    # 解析 "Fast Standard [Long_Life]" 格式
+    current = None
+    available = []
+    for token in ct.split():
+        if token.startswith("[") and token.endswith("]"):
+            current = token.strip("[]")
+        available.append(token.strip("[]"))
+    return current, available
+```
+
+切换模式:
+```bash
+echo "Fast" | sudo tee /sys/class/power_supply/BAT1/charge_types
 ```
 
 ### 6.3 电池
