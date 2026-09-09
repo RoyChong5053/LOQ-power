@@ -165,6 +165,82 @@ def write_ec_value(attr_name, value):
     return _write_attr_root(attr_name, value)
 
 
+def apply_all_settings(ec_values, cpu_freq_mhz=None, governor=None, epp=None, platform_profile=None):
+    """Apply ALL settings in a single pkexec call to avoid repeated password prompts.
+
+    Args:
+        ec_values: dict of {attr_name: int_value} for EC attributes
+        cpu_freq_mhz: CPU max frequency in MHz (converted to kHz inside)
+        governor: CPU scaling governor string
+        epp: Energy Performance Preference string
+        platform_profile: Platform profile string
+
+    Returns:
+        (bool, str) - (success, error_message)
+    """
+    base = _find_lenovo_attrs_path()
+    if not base:
+        return False, "Firmware attributes not found"
+
+    cmds = []
+
+    # EC attribute writes
+    for attr_name, value in ec_values.items():
+        fpath = os.path.join(base, attr_name, "current_value")
+        if os.path.isfile(fpath):
+            cmds.append(f'echo "{value}" > "{fpath}"')
+
+    # CPU frequency writes (all CPUs)
+    if cpu_freq_mhz is not None:
+        freq_khz = cpu_freq_mhz * 1000
+        n = _get_cpu_count()
+        for i in range(n):
+            fpath = os.path.join(CPUFREQ_BASE, f"cpu{i}", "cpufreq", "scaling_max_freq")
+            if os.path.isfile(fpath):
+                cmds.append(f'echo "{freq_khz}" > "{fpath}"')
+
+    # Governor writes (all CPUs)
+    if governor:
+        n = _get_cpu_count()
+        for i in range(n):
+            fpath = os.path.join(CPUFREQ_BASE, f"cpu{i}", "cpufreq", "scaling_governor")
+            if os.path.isfile(fpath):
+                cmds.append(f'echo "{governor}" > "{fpath}"')
+
+    # EPP writes (all CPUs)
+    if epp:
+        n = _get_cpu_count()
+        for i in range(n):
+            fpath = os.path.join(CPUFREQ_BASE, f"cpu{i}", "cpufreq", "energy_performance_preference")
+            if os.path.isfile(fpath):
+                cmds.append(f'echo "{epp}" > "{fpath}"')
+
+    # Platform profile
+    if platform_profile and os.path.isfile(PLATFORM_PROFILE):
+        cmds.append(f'echo "{platform_profile}" > "{PLATFORM_PROFILE}"')
+
+    if not cmds:
+        return False, "No valid paths to write"
+
+    script = " && ".join(cmds)
+    try:
+        result = subprocess.run(
+            ["pkexec", "bash", "-c", script],
+            capture_output=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode().strip()
+            if "cancelled" in stderr.lower() or "dismissed" in stderr.lower():
+                return False, "Cancelled by user"
+            return False, stderr or "Write failed"
+        return True, ""
+    except subprocess.TimeoutExpired:
+        return False, "Timeout"
+    except Exception as e:
+        return False, str(e)
+
+
 def read_all_ec():
     """Read all EC attribute values and metadata."""
     result = {}

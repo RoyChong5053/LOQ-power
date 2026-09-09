@@ -253,48 +253,34 @@ class PowerPage(Gtk.Box):
         self._loading = False
 
     def apply_all(self):
-        """Apply all current slider values to hardware."""
-        errors = []
-
-        # EC attributes
+        """Apply all current slider values to hardware in one pkexec call."""
+        # Collect EC values
+        ec_values = {}
         for attr_name, card in self.cards.items():
             if attr_name in ec_backend.EC_ATTRIBUTES:
-                val = card.get_value()
-                ok, err = ec_backend.write_ec_value(attr_name, val)
-                if not ok:
-                    errors.append(f"{attr_name}: {err}")
+                ec_values[attr_name] = card.get_value()
 
-        # CPU max freq
-        max_freq = self.freq_card.get_value() * 1000
-        ok, err = ec_backend.write_cpu_scaling_max_freq(max_freq)
-        if not ok:
-            errors.append(f"scaling_max_freq: {err}")
-
-        # Governor (all CPUs)
-        gov = self.gov_combo.get_active_text()
-        if gov:
-            ok, err = ec_backend.write_cpu_governor(gov)
-            if not ok:
-                errors.append(f"governor: {err}")
-
-        # EPP (all CPUs)
+        # Collect CPU settings
+        cpu_freq_mhz = self.freq_card.get_value()
+        governor = self.gov_combo.get_active_text()
         epp = self.epp_combo.get_active_text()
-        if epp:
-            ok, err = ec_backend.write_cpu_epp(epp)
-            if not ok:
-                errors.append(f"epp: {err}")
-
-        # Platform profile
         pp = self.pp_combo.get_active_text()
-        if pp:
-            ok, err = ec_backend.write_platform_profile(pp)
-            if not ok:
-                errors.append(f"platform_profile: {err}")
+
+        # Single pkexec call for everything
+        ok, err = ec_backend.apply_all_settings(
+            ec_values=ec_values,
+            cpu_freq_mhz=cpu_freq_mhz,
+            governor=governor,
+            epp=epp,
+            platform_profile=pp,
+        )
 
         # Refresh to show updated values
         GLib.timeout_add(500, self.refresh)
 
-        return errors
+        if not ok:
+            return [err]
+        return []
 
     def collect_current_settings(self):
         """Collect all current slider/combo values into a dict."""
