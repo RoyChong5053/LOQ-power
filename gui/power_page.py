@@ -15,7 +15,6 @@ class PowerPage(Gtk.Box):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.set_vexpand(True)
 
-        # State
         self.ec_data = {}
         self.cpu_data = {}
         self.nvidia_data = {}
@@ -33,11 +32,28 @@ class PowerPage(Gtk.Box):
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         scroll.set_child(content)
 
+        # ── Thermal mode banner (always visible) ──
+        self.thermal_banner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.thermal_banner.set_margin_start(12)
+        self.thermal_banner.set_margin_end(12)
+        self.thermal_banner.set_margin_top(10)
+        self.thermal_banner.set_margin_bottom(6)
+        self.thermal_banner.add_css_class("osd")
+        content.append(self.thermal_banner)
+
+        self.thermal_icon = Gtk.Image.new_from_icon_name("dialog-information-symbolic")
+        self.thermal_icon.set_pixel_size(16)
+        self.thermal_banner.append(self.thermal_icon)
+
+        self.thermal_label = Gtk.Label(label="检测中...", xalign=0, wrap=True)
+        self.thermal_label.set_hexpand(True)
+        self.thermal_banner.append(self.thermal_label)
+
         # ── Profile bar ──
         profile_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         profile_bar.set_margin_start(12)
         profile_bar.set_margin_end(12)
-        profile_bar.set_margin_top(12)
+        profile_bar.set_margin_top(4)
         profile_bar.set_margin_bottom(8)
         content.append(profile_bar)
 
@@ -159,24 +175,46 @@ class PowerPage(Gtk.Box):
         self.status_cpu_freq = StatusRow("CPU 频率")
         content.append(self.status_cpu_freq)
 
+        self.status_fan = StatusRow("风扇转速")
+        content.append(self.status_fan)
+
         # Bottom padding
         bottom_pad = Gtk.Box()
         bottom_pad.set_margin_bottom(24)
         content.append(bottom_pad)
 
-        # Load data
         self.refresh()
+
+    def _update_thermal_banner(self):
+        """Update the thermal mode banner based on current state."""
+        mode, desc = ec_backend.read_thermal_mode_summary()
+        if mode == "custom":
+            self.thermal_icon.set_from_icon_name("emblem-ok-symbolic")
+            self.thermal_label.set_text("CUSTOM 模式 (Fn+Q 紫灯) - EC 功率限制可写入")
+            self.thermal_banner.remove_css_class("warning")
+            self.thermal_banner.add_css_class("success")
+        else:
+            self.thermal_icon.set_from_icon_name("dialog-warning-symbolic")
+            self.thermal_label.set_text(
+                f"当前: {desc}\n"
+                "按 Fn+Q 切换到紫灯 (CUSTOM) 后才能写入 EC 功率限制\n"
+                "CPU 频率控制随时可用"
+            )
+            self.thermal_banner.remove_css_class("success")
+            self.thermal_banner.add_css_class("warning")
 
     def refresh(self):
         """Reload all values from hardware."""
         self._loading = True
 
+        # Update thermal mode banner
+        self._update_thermal_banner()
+
         # Read EC
         self.ec_data = ec_backend.read_all_ec()
         for attr_name, data in self.ec_data.items():
             if attr_name in self.cards:
-                card = self.cards[attr_name]
-                card.set_value(data["value"])
+                self.cards[attr_name].set_value(data["value"])
 
         # Read CPU
         self.cpu_data = ec_backend.read_cpu_freq()
@@ -189,22 +227,13 @@ class PowerPage(Gtk.Box):
         if max_freq_mhz is not None:
             self.freq_card.set_value(max_freq_mhz)
 
-        # Governor
         gov = self.cpu_data.get("scaling_governor", "performance")
-        idx = 0 if gov == "performance" else 1
-        self.gov_combo.set_active(idx)
+        self.gov_combo.set_active(0 if gov == "performance" else 1)
 
-        # EPP
         epp = self.cpu_data.get("energy_performance_preference", "performance")
-        epp_map = {
-            "performance": 0,
-            "balance_performance": 1,
-            "balance_power": 2,
-            "power": 3,
-        }
+        epp_map = {"performance": 0, "balance_performance": 1, "balance_power": 2, "power": 3}
         self.epp_combo.set_active(epp_map.get(epp, 0))
 
-        # Platform profile
         pp = ec_backend.read_platform_profile()
         if pp:
             pp_choices = ec_backend.read_platform_profile_choices()
@@ -219,10 +248,7 @@ class PowerPage(Gtk.Box):
         gpu_limit = self.nvidia_data.get("current_power_limit")
         gpu_max = self.nvidia_data.get("max_power_limit")
 
-        if gpu_power is not None:
-            self.status_gpu_power.set_value(f"{gpu_power:.1f} W")
-        else:
-            self.status_gpu_power.set_value("N/A")
+        self.status_gpu_power.set_value(f"{gpu_power:.1f} W" if gpu_power is not None else "N/A")
 
         if gpu_limit is not None:
             limit_str = f"{gpu_limit:.0f} W"
@@ -232,7 +258,6 @@ class PowerPage(Gtk.Box):
         else:
             self.status_gpu_limit.set_value("N/A")
 
-        # EC state summary
         ctgp = self.ec_data.get("gpu_nv_ctgp", {}).get("value")
         ppab = self.ec_data.get("gpu_nv_ppab", {}).get("value")
         if ctgp is not None and ppab is not None:
@@ -240,7 +265,6 @@ class PowerPage(Gtk.Box):
         else:
             self.status_ec_state.set_value("EC 未就绪")
 
-        # CPU freq summary
         cur_freq = self.cpu_data.get("scaling_max_freq")
         info_max = self.cpu_data.get("cpuinfo_max_freq")
         if cur_freq and info_max:
@@ -250,23 +274,28 @@ class PowerPage(Gtk.Box):
         else:
             self.status_cpu_freq.set_value("N/A")
 
+        # Fan info
+        fan_info = ec_backend.read_fan_info()
+        if fan_info:
+            fan_strs = [f"Fan{k}: {v} RPM" for k, v in sorted(fan_info.items())]
+            self.status_fan.set_value(" | ".join(fan_strs))
+        else:
+            self.status_fan.set_value("N/A")
+
         self._loading = False
 
     def apply_all(self):
-        """Apply all current slider values to hardware in one pkexec call."""
-        # Collect EC values
+        """Apply all current slider values to hardware."""
         ec_values = {}
         for attr_name, card in self.cards.items():
             if attr_name in ec_backend.EC_ATTRIBUTES:
                 ec_values[attr_name] = card.get_value()
 
-        # Collect CPU settings
         cpu_freq_mhz = self.freq_card.get_value()
         governor = self.gov_combo.get_active_text()
         epp = self.epp_combo.get_active_text()
         pp = self.pp_combo.get_active_text()
 
-        # Single pkexec call for everything
         ok, err = ec_backend.apply_all_settings(
             ec_values=ec_values,
             cpu_freq_mhz=cpu_freq_mhz,
@@ -275,7 +304,6 @@ class PowerPage(Gtk.Box):
             platform_profile=pp,
         )
 
-        # Refresh to show updated values
         GLib.timeout_add(500, self.refresh)
 
         if not ok:
@@ -283,11 +311,9 @@ class PowerPage(Gtk.Box):
         return []
 
     def collect_current_settings(self):
-        """Collect all current slider/combo values into a dict."""
         settings = {}
         for attr_name, card in self.cards.items():
             settings[attr_name] = card.get_value()
-
         settings["cpu_scaling_max_freq"] = self.freq_card.get_value() * 1000
         settings["cpu_governor"] = self.gov_combo.get_active_text()
         settings["cpu_epp"] = self.epp_combo.get_active_text()
@@ -295,7 +321,6 @@ class PowerPage(Gtk.Box):
         return settings
 
     def apply_profile_settings(self, settings):
-        """Apply a profile's settings to the UI (does NOT write to hardware)."""
         self._loading = True
         for attr_name, card in self.cards.items():
             if attr_name in settings:
@@ -321,8 +346,6 @@ class PowerPage(Gtk.Box):
         self._loading = False
 
     def set_profiles(self, profile_names, active_name=None, on_select=None):
-        """Build the profile button bar."""
-        # Clear existing
         while child := self.profile_box.get_first_child():
             self.profile_box.remove(child)
         self.profile_buttons.clear()
@@ -336,8 +359,6 @@ class PowerPage(Gtk.Box):
             self.profile_box.append(btn)
 
     def _on_save_profile(self, btn):
-        """Emit a signal to parent to handle save."""
-        # Find the toplevel window and call its save handler
         win = self.get_root()
         if win and hasattr(win, "_on_save_profile"):
             win._on_save_profile()

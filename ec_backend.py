@@ -6,6 +6,17 @@ import subprocess
 FIRMWARE_ATTRS_BASE = "/sys/class/firmware-attributes"
 CPUFREQ_BASE = "/sys/devices/system/cpu"
 PLATFORM_PROFILE = "/sys/firmware/acpi/platform_profile"
+HELPER_SCRIPT = "/usr/local/bin/loq-power-apply"
+
+# Thermal mode enum from kernel wmi-helpers.h
+THERMAL_MODES = {
+    0x00: "none",
+    0x01: "quiet",
+    0x02: "balanced",
+    0x03: "performance",
+    0xE0: "extreme",
+    0xFF: "custom",
+}
 
 
 def _find_lenovo_attrs_path():
@@ -20,18 +31,20 @@ def _find_lenovo_attrs_path():
     return None
 
 
+def _read_file(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except (PermissionError, OSError):
+        return None
+
+
 def _read_attr(attr_name, field="current_value"):
     base = _find_lenovo_attrs_path()
     if not base:
         return None
     fpath = os.path.join(base, attr_name, field)
-    if not os.path.isfile(fpath):
-        return None
-    try:
-        with open(fpath) as f:
-            return f.read().strip()
-    except (PermissionError, OSError):
-        return None
+    return _read_file(fpath) if os.path.isfile(fpath) else None
 
 
 def _read_attr_meta(attr_name):
@@ -39,102 +52,117 @@ def _read_attr_meta(attr_name):
     if not base:
         return {}
     meta = {}
-    for field in ("min_value", "max_value", "default_value", "scalar_increment", "display_name"):
+    for field in ("min_value", "max_value", "default_value", "scalar_increment"):
         fpath = os.path.join(base, attr_name, field)
         if os.path.isfile(fpath):
-            try:
-                with open(fpath) as f:
-                    meta[field] = f.read().strip()
-            except (PermissionError, OSError):
-                pass
+            val = _read_file(fpath)
+            if val is not None:
+                try:
+                    meta[field] = int(val)
+                except ValueError:
+                    meta[field] = val
     return meta
 
 
-def _write_attr_root(attr_name, value):
-    """Write to an EC attribute using pkexec for root privileges."""
+# ── Thermal mode detection ─────────────────────────────────────
+
+def read_platform_profile():
+    """Read current platform profile (thermal mode indicator)."""
+    return _read_file(PLATFORM_PROFILE)
+
+
+def read_platform_profile_choices():
+    choices_path = PLATFORM_PROFILE + "_choices"
+    return _read_file(choices_path).split() if os.path.isfile(choices_path) else []
+
+
+def is_custom_mode():
+    """Check if the system is in CUSTOM thermal mode (0xFF).
+
+    The kernel lenovo_wmi_other driver requires CUSTOM mode to write EC values.
+    Fn+Q switches to CUSTOM (purple LED). platform_profile may not reflect this
+    because the gamezone driver doesn't expose CUSTOM via platform_profile.
+    We detect CUSTOM by attempting a test write.
+    """
+    pp = read_platform_profile()
+    if pp == "custom":
+        return True
+
+    # platform_profile might not show "custom" even when in custom mode
+    # because the gamezone driver doesn't map it properly.
+    # Try a test write to detect custom mode.
     base = _find_lenovo_attrs_path()
     if not base:
-        return False, "Firmware attributes not found"
-    fpath = os.path.join(base, attr_name, "current_value")
-    if not os.path.isfile(fpath):
-        return False, f"Attribute {attr_name} not found"
+        return False
+
+    # Read a value, modify it slightly, write it back, then restore
+    test_attr = "gpu_nv_cpu_boost"
+    test_path = os.path.join(base, test_attr, "current_value")
+    if not os.path.isfile(test_path):
+        return False
+
+    try:
+        with open(test_path) as f:
+            original = f.read().strip()
+    except (PermissionError, OSError):
+        return False
+
+    # Try writing the same value back (no actual change)
     try:
         result = subprocess.run(
-            ["pkexec", "tee", fpath],
-            input=str(value).encode(),
+            ["sudo", "tee", test_path],
+            input=original.encode(),
             capture_output=True,
-            timeout=10,
+            timeout=5,
         )
-        if result.returncode != 0:
-            stderr = result.stderr.decode().strip()
-            if "cancelled" in stderr.lower() or "dismissed" in stderr.lower():
-                return False, "Cancelled by user"
-            return False, stderr or "Write failed"
-        return True, ""
-    except subprocess.TimeoutExpired:
-        return False, "Timeout"
-    except Exception as e:
-        return False, str(e)
+        if result.returncode == 0:
+            return True
+        stderr = result.stderr.decode().strip()
+        if "busy" in stderr.lower():
+            return False
+        # Other errors might mean different things
+        return False
+    except Exception:
+        return False
+
+
+def read_thermal_mode_summary():
+    """Return a human-readable summary of the current thermal mode."""
+    pp = read_platform_profile()
+    if pp == "custom":
+        return "custom", "CUSTOM (Fn+Q 紫灯) - 可写入 EC"
+
+    # Check if actually in custom mode despite platform_profile
+    if is_custom_mode():
+        return "custom", "CUSTOM (Fn+Q 紫灯) - 可写入 EC"
+
+    mode_desc = {
+        "low-power": "静音 (Fn+Q 白灯) - EC 只读",
+        "balanced": "均衡 (Fn+Q 白灯) - EC 只读",
+        "performance": "性能 (Fn+Q 红灯) - EC 只读",
+        "max-power": "极速 (Fn+Q 红灯) - EC 只读",
+    }
+    desc = mode_desc.get(pp, f"{pp} - EC 只读")
+    return pp, desc
 
 
 # ── EC firmware attributes ──────────────────────────────────────
 
 EC_ATTRIBUTES = {
-    "gpu_nv_ctgp": {
-        "name": "GPU cTGP",
-        "desc": "Configurable Total Graphics Power",
-        "unit": "W",
-    },
-    "gpu_nv_ppab": {
-        "name": "GPU PPAB",
-        "desc": "Power Performance Aware Boost",
-        "unit": "W",
-    },
-    "gpu_nv_ac_offset": {
-        "name": "GPU AC Offset",
-        "desc": "Total Processing Power Baseline Offset",
-        "unit": "W",
-    },
-    "gpu_nv_cpu_boost": {
-        "name": "GPU→CPU Boost",
-        "desc": "Dynamic Boost Limit",
-        "unit": "W",
-    },
-    "gpu_temp": {
-        "name": "GPU Temp Limit",
-        "desc": "GPU Thermal Load Limit",
-        "unit": "°C",
-    },
-    "ppt_pl1_spl": {
-        "name": "CPU PL1",
-        "desc": "Sustained Power Limit",
-        "unit": "W",
-    },
-    "ppt_pl2_sppt": {
-        "name": "CPU PL2",
-        "desc": "Short Term Power Limit",
-        "unit": "W",
-    },
-    "ppt_pl3_fppt": {
-        "name": "CPU PL3",
-        "desc": "Fast Package Power Tracking",
-        "unit": "W",
-    },
-    "ppt_cpu_cl": {
-        "name": "CPU Cross Load",
-        "desc": "Cross Loading Power Limit",
-        "unit": "W",
-    },
-    "cpu_temp": {
-        "name": "CPU Temp Limit",
-        "desc": "CPU Thermal Load Limit",
-        "unit": "°C",
-    },
+    "gpu_nv_ctgp": {"name": "GPU cTGP", "desc": "可配置总图形功率", "unit": "W"},
+    "gpu_nv_ppab": {"name": "GPU PPAB", "desc": "功率加速", "unit": "W"},
+    "gpu_nv_ac_offset": {"name": "GPU AC Offset", "desc": "总功率偏移", "unit": "W"},
+    "gpu_nv_cpu_boost": {"name": "GPU→CPU Boost", "desc": "动态加速", "unit": "W"},
+    "gpu_temp": {"name": "GPU 温度限制", "desc": "GPU 热负载限制", "unit": "°C"},
+    "ppt_pl1_spl": {"name": "CPU PL1", "desc": "持续功率限制", "unit": "W"},
+    "ppt_pl2_sppt": {"name": "CPU PL2", "desc": "短时功率限制", "unit": "W"},
+    "ppt_pl3_fppt": {"name": "CPU PL3", "desc": "快速功率跟踪", "unit": "W"},
+    "ppt_cpu_cl": {"name": "CPU 交叉负载", "desc": "交叉负载功率", "unit": "W"},
+    "cpu_temp": {"name": "CPU 温度限制", "desc": "CPU 热负载限制", "unit": "°C"},
 }
 
 
 def read_ec_value(attr_name):
-    """Read current EC attribute value as int."""
     val = _read_attr(attr_name, "current_value")
     if val is None:
         return None
@@ -145,104 +173,15 @@ def read_ec_value(attr_name):
 
 
 def read_ec_meta(attr_name):
-    """Read EC attribute metadata (min, max, default)."""
     meta = _read_attr_meta(attr_name)
-    result = {}
-    for key in ("min_value", "max_value", "default_value"):
-        val = meta.get(key)
-        if val is not None:
-            try:
-                result[key] = int(val)
-            except ValueError:
-                result[key] = val
-        else:
-            result[key] = None
-    return result
-
-
-def write_ec_value(attr_name, value):
-    """Write value to EC attribute (requires root)."""
-    return _write_attr_root(attr_name, value)
-
-
-def apply_all_settings(ec_values, cpu_freq_mhz=None, governor=None, epp=None, platform_profile=None):
-    """Apply ALL settings in a single pkexec call to avoid repeated password prompts.
-
-    Args:
-        ec_values: dict of {attr_name: int_value} for EC attributes
-        cpu_freq_mhz: CPU max frequency in MHz (converted to kHz inside)
-        governor: CPU scaling governor string
-        epp: Energy Performance Preference string
-        platform_profile: Platform profile string
-
-    Returns:
-        (bool, str) - (success, error_message)
-    """
-    base = _find_lenovo_attrs_path()
-    if not base:
-        return False, "Firmware attributes not found"
-
-    cmds = []
-
-    # EC attribute writes
-    for attr_name, value in ec_values.items():
-        fpath = os.path.join(base, attr_name, "current_value")
-        if os.path.isfile(fpath):
-            cmds.append(f'echo "{value}" > "{fpath}"')
-
-    # CPU frequency writes (all CPUs)
-    if cpu_freq_mhz is not None:
-        freq_khz = cpu_freq_mhz * 1000
-        n = _get_cpu_count()
-        for i in range(n):
-            fpath = os.path.join(CPUFREQ_BASE, f"cpu{i}", "cpufreq", "scaling_max_freq")
-            if os.path.isfile(fpath):
-                cmds.append(f'echo "{freq_khz}" > "{fpath}"')
-
-    # Governor writes (all CPUs)
-    if governor:
-        n = _get_cpu_count()
-        for i in range(n):
-            fpath = os.path.join(CPUFREQ_BASE, f"cpu{i}", "cpufreq", "scaling_governor")
-            if os.path.isfile(fpath):
-                cmds.append(f'echo "{governor}" > "{fpath}"')
-
-    # EPP writes (all CPUs)
-    if epp:
-        n = _get_cpu_count()
-        for i in range(n):
-            fpath = os.path.join(CPUFREQ_BASE, f"cpu{i}", "cpufreq", "energy_performance_preference")
-            if os.path.isfile(fpath):
-                cmds.append(f'echo "{epp}" > "{fpath}"')
-
-    # Platform profile
-    if platform_profile and os.path.isfile(PLATFORM_PROFILE):
-        cmds.append(f'echo "{platform_profile}" > "{PLATFORM_PROFILE}"')
-
-    if not cmds:
-        return False, "No valid paths to write"
-
-    script = " && ".join(cmds)
-    try:
-        result = subprocess.run(
-            ["pkexec", "bash", "-c", script],
-            capture_output=True,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode().strip()
-            if "cancelled" in stderr.lower() or "dismissed" in stderr.lower():
-                return False, "Cancelled by user"
-            return False, stderr or "Write failed"
-        return True, ""
-    except subprocess.TimeoutExpired:
-        return False, "Timeout"
-    except Exception as e:
-        return False, str(e)
+    return {
+        "min_value": meta.get("min_value"),
+        "max_value": meta.get("max_value"),
+        "default_value": meta.get("default_value"),
+    }
 
 
 def read_all_ec():
-    """Read all EC attribute values and metadata."""
     result = {}
     for attr_name, info in EC_ATTRIBUTES.items():
         val = read_ec_value(attr_name)
@@ -257,141 +196,94 @@ def read_all_ec():
     return result
 
 
+# ── Apply settings ─────────────────────────────────────────────
+
+def apply_all_settings(ec_values, cpu_freq_mhz=None, governor=None, epp=None, platform_profile=None):
+    """Apply ALL settings in a single sudo call.
+
+    Returns:
+        (bool, str) - (success, error_message)
+    """
+    # Check if helper script exists
+    if not os.path.isfile(HELPER_SCRIPT):
+        return False, (
+            f"Helper script not found: {HELPER_SCRIPT}\n"
+            "Run: sudo cp loq-power-apply /usr/local/bin/ && sudo chmod +x /usr/local/bin/loq-power-apply"
+        )
+
+    # Check if EC writes are possible (custom mode required)
+    if ec_values:
+        custom = is_custom_mode()
+        if not custom:
+            return False, (
+                "EC 写入需要 CUSTOM 模式 (Fn+Q 紫灯)\n"
+                "请先按 Fn+Q 切换到紫灯，再点击应用"
+            )
+
+    # Build key=value input for the helper script
+    lines = []
+    for attr_name, value in ec_values.items():
+        lines.append(f"ec_{attr_name}={value}")
+    if cpu_freq_mhz is not None:
+        lines.append(f"cpu_max_freq={cpu_freq_mhz * 1000}")
+    if governor:
+        lines.append(f"cpu_governor={governor}")
+    if epp:
+        lines.append(f"cpu_epp={epp}")
+    if platform_profile:
+        lines.append(f"platform_profile={platform_profile}")
+
+    if not lines:
+        return False, "No settings to apply"
+
+    stdin_data = "\n".join(lines) + "\n"
+
+    try:
+        result = subprocess.run(
+            ["sudo", HELPER_SCRIPT],
+            input=stdin_data.encode(),
+            capture_output=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode().strip()
+            stdout = result.stdout.decode().strip()
+            # Check for specific errors
+            if "Device or resource busy" in stderr:
+                return False, (
+                    "EC 写入失败: 内核要求 CUSTOM 模式\n"
+                    "请按 Fn+Q 切换到紫灯 (CUSTOM) 后重试"
+                )
+            return False, stderr or stdout or "Write failed"
+        return True, ""
+    except subprocess.TimeoutExpired:
+        return False, "Timeout"
+    except Exception as e:
+        return False, str(e)
+
+
 # ── CPU frequency scaling ───────────────────────────────────────
 
 def _get_cpu_count():
-    count = 0
-    for name in os.listdir(CPUFREQ_BASE):
-        if name.startswith("cpu") and name[3:].isdigit():
-            count += 1
-    return count
+    return sum(1 for name in os.listdir(CPUFREQ_BASE)
+               if name.startswith("cpu") and name[3:].isdigit())
 
 
 def read_cpu_freq():
-    """Read CPU frequency settings."""
     n = _get_cpu_count()
     if n == 0:
         return {}
     cpu0 = os.path.join(CPUFREQ_BASE, "cpu0", "cpufreq")
     result = {}
-    for field, fname in [
-        ("scaling_max_freq", "scaling_max_freq"),
-        ("scaling_min_freq", "scaling_min_freq"),
-        ("scaling_governor", "scaling_governor"),
-        ("energy_performance_preference", "energy_performance_preference"),
-        ("cpuinfo_max_freq", "cpuinfo_max_freq"),
-        ("cpuinfo_min_freq", "cpuinfo_min_freq"),
-    ]:
+    for fname in ("scaling_max_freq", "scaling_min_freq", "scaling_governor",
+                   "energy_performance_preference", "cpuinfo_max_freq", "cpuinfo_min_freq"):
         fpath = os.path.join(cpu0, fname)
         if os.path.isfile(fpath):
-            try:
-                with open(fpath) as f:
-                    result[field] = f.read().strip()
-            except (PermissionError, OSError):
-                pass
+            val = _read_file(fpath)
+            if val is not None:
+                result[fname] = val
     result["cpu_count"] = n
     return result
-
-
-def _write_cpu_sysfs(field, value, per_cpu=False):
-    """Write to CPU sysfs files. Requires root."""
-    n = _get_cpu_count()
-    if n == 0:
-        return False, "No CPUs found"
-    if per_cpu:
-        paths = [
-            os.path.join(CPUFREQ_BASE, f"cpu{i}", "cpufreq", field)
-            for i in range(n)
-        ]
-    else:
-        paths = [os.path.join(CPUFREQ_BASE, "cpu0", "cpufreq", field)]
-
-    # Build a shell script that writes to all paths
-    cmds = []
-    for p in paths:
-        if os.path.isfile(p):
-            cmds.append(f'echo "{value}" > "{p}"')
-    if not cmds:
-        return False, "No valid CPU sysfs paths found"
-
-    script = " && ".join(cmds)
-    try:
-        result = subprocess.run(
-            ["pkexec", "bash", "-c", script],
-            capture_output=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode().strip()
-            if "cancelled" in stderr.lower() or "dismissed" in stderr.lower():
-                return False, "Cancelled by user"
-            return False, stderr or "Write failed"
-        return True, ""
-    except subprocess.TimeoutExpired:
-        return False, "Timeout"
-    except Exception as e:
-        return False, str(e)
-
-
-def write_cpu_scaling_max_freq(freq_khz):
-    return _write_cpu_sysfs("scaling_max_freq", freq_khz, per_cpu=True)
-
-
-def write_cpu_scaling_min_freq(freq_khz):
-    return _write_cpu_sysfs("scaling_min_freq", freq_khz, per_cpu=True)
-
-
-def write_cpu_governor(governor):
-    return _write_cpu_sysfs("scaling_governor", governor, per_cpu=True)
-
-
-def write_cpu_epp(epp):
-    return _write_cpu_sysfs("energy_performance_preference", epp, per_cpu=True)
-
-
-# ── Platform profile ────────────────────────────────────────────
-
-def read_platform_profile():
-    if not os.path.isfile(PLATFORM_PROFILE):
-        return None
-    try:
-        with open(PLATFORM_PROFILE) as f:
-            return f.read().strip()
-    except (PermissionError, OSError):
-        return None
-
-
-def read_platform_profile_choices():
-    choices_path = PLATFORM_PROFILE + "_choices"
-    if not os.path.isfile(choices_path):
-        return []
-    try:
-        with open(choices_path) as f:
-            return f.read().strip().split()
-    except (PermissionError, OSError):
-        return []
-
-
-def write_platform_profile(profile):
-    if not os.path.isfile(PLATFORM_PROFILE):
-        return False, "Platform profile not found"
-    try:
-        result = subprocess.run(
-            ["pkexec", "tee", PLATFORM_PROFILE],
-            input=profile.encode(),
-            capture_output=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.decode().strip()
-            if "cancelled" in stderr.lower() or "dismissed" in stderr.lower():
-                return False, "Cancelled by user"
-            return False, stderr or "Write failed"
-        return True, ""
-    except subprocess.TimeoutExpired:
-        return False, "Timeout"
-    except Exception as e:
-        return False, str(e)
 
 
 # ── NVIDIA GPU info ─────────────────────────────────────────────
@@ -426,7 +318,7 @@ def read_nvidia_power():
                     info["default_power_limit"] = float(val)
                 except ValueError:
                     pass
-            elif "Average Power Draw" in line and "GPU" not in info:
+            elif "Average Power Draw" in line and "power_draw" not in info:
                 val = line.split(":")[-1].strip().replace(" W", "")
                 try:
                     info["power_draw"] = float(val)
@@ -435,3 +327,27 @@ def read_nvidia_power():
         return info if info else None
     except Exception:
         return None
+
+
+# ── Fan info ────────────────────────────────────────────────────
+
+def read_fan_info():
+    """Read fan speed from acpi_fan hwmon."""
+    result = {}
+    for hwmon_dir in sorted(os.listdir("/sys/class/hwmon")):
+        hwmon_path = os.path.join("/sys/class/hwmon", hwmon_dir)
+        name_file = os.path.join(hwmon_path, "name")
+        if not os.path.isfile(name_file):
+            continue
+        name = _read_file(name_file)
+        if name == "acpi_fan":
+            for fan_file in sorted(os.listdir(hwmon_path)):
+                if fan_file.startswith("fan") and fan_file.endswith("_input"):
+                    fan_id = fan_file.replace("_input", "")
+                    val = _read_file(os.path.join(hwmon_path, fan_file))
+                    if val:
+                        try:
+                            result[fan_id] = int(val)
+                        except ValueError:
+                            pass
+    return result

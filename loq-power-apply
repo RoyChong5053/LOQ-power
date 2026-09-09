@@ -1,0 +1,65 @@
+#!/bin/bash
+# LOQ Power Control helper script
+# Reads key=value pairs from stdin and writes to sysfs
+# Usage: echo "key=val" | loq-power-apply
+
+set -e
+
+FIRMWARE_BASE="/sys/class/firmware-attributes"
+CPUFREQ_BASE="/sys/devices/system/cpu"
+PLATFORM_PROFILE="/sys/firmware/acpi/platform_profile"
+
+# Find lenovo attributes path
+find_attrs_path() {
+    for d in "$FIRMWARE_BASE"/*/; do
+        [ -d "$d" ] || continue
+        if [[ "$(basename "$d")" == *lenovo-wmi-other* ]]; then
+            echo "${d}attributes"
+            return
+        fi
+    done
+}
+
+ATTRS_PATH=$(find_attrs_path)
+ERRORS=""
+
+while IFS='=' read -r key value; do
+    [ -z "$key" ] && continue
+
+    case "$key" in
+        ec_*)
+            attr="${key#ec_}"
+            fpath="$ATTRS_PATH/$attr/current_value"
+            if [ -f "$fpath" ]; then
+                if ! echo "$value" > "$fpath" 2>/tmp/loq-err; then
+                    ERRORS="${ERRORS}${attr}: $(cat /tmp/loq-err)\n"
+                fi
+            fi
+            ;;
+        cpu_max_freq)
+            for cpu_path in "$CPUFREQ_BASE"/cpu*/cpufreq/scaling_max_freq; do
+                [ -f "$cpu_path" ] && echo "$value" > "$cpu_path" 2>/dev/null || true
+            done
+            ;;
+        cpu_governor)
+            for cpu_path in "$CPUFREQ_BASE"/cpu*/cpufreq/scaling_governor; do
+                [ -f "$cpu_path" ] && echo "$value" > "$cpu_path" 2>/dev/null || true
+            done
+            ;;
+        cpu_epp)
+            for cpu_path in "$CPUFREQ_BASE"/cpu*/cpufreq/energy_performance_preference; do
+                [ -f "$cpu_path" ] && echo "$value" > "$cpu_path" 2>/dev/null || true
+            done
+            ;;
+        platform_profile)
+            if [ -f "$PLATFORM_PROFILE" ]; then
+                echo "$value" > "$PLATFORM_PROFILE" 2>/dev/null || true
+            fi
+            ;;
+    esac
+done
+
+if [ -n "$ERRORS" ]; then
+    echo -e "$ERRORS" >&2
+    exit 1
+fi
