@@ -190,15 +190,14 @@ class PowerPage(Gtk.Box):
         mode, desc = ec_backend.read_thermal_mode_summary()
         if mode == "custom":
             self.thermal_icon.set_from_icon_name("emblem-ok-symbolic")
-            self.thermal_label.set_text("CUSTOM 模式 (Fn+Q 紫灯) - EC 功率限制可写入")
+            self.thermal_label.set_text("CUSTOM 模式 - EC 功率限制可写入")
             self.thermal_banner.remove_css_class("warning")
             self.thermal_banner.add_css_class("success")
         else:
             self.thermal_icon.set_from_icon_name("dialog-warning-symbolic")
             self.thermal_label.set_text(
                 f"当前: {desc}\n"
-                "按 Fn+Q 切换到紫灯 (CUSTOM) 后才能写入 EC 功率限制\n"
-                "CPU 频率控制随时可用"
+                "点击「应用」时会自动切换到 CUSTOM 模式"
             )
             self.thermal_banner.remove_css_class("success")
             self.thermal_banner.add_css_class("warning")

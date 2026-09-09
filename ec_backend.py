@@ -2,21 +2,11 @@
 
 import os
 import subprocess
+import glob
 
 FIRMWARE_ATTRS_BASE = "/sys/class/firmware-attributes"
 CPUFREQ_BASE = "/sys/devices/system/cpu"
-PLATFORM_PROFILE = "/sys/firmware/acpi/platform_profile"
 HELPER_SCRIPT = "/usr/local/bin/loq-power-apply"
-
-# Thermal mode enum from kernel wmi-helpers.h
-THERMAL_MODES = {
-    0x00: "none",
-    0x01: "quiet",
-    0x02: "balanced",
-    0x03: "performance",
-    0xE0: "extreme",
-    0xFF: "custom",
-}
 
 
 def _find_lenovo_attrs_path():
@@ -31,12 +21,47 @@ def _find_lenovo_attrs_path():
     return None
 
 
+def _find_gamezone_profile_path():
+    """Find the gamezone platform-profile path.
+
+    On LOQ models, the gamezone WMI driver exposes the thermal mode
+    through a platform-profile device. This is the ONLY way to switch
+    to CUSTOM mode programmatically (Fn+Q doesn't reach CUSTOM on LOQ).
+    """
+    pattern = "/sys/bus/wmi/drivers/lenovo_wmi_gamezone/*/platform-profile/platform-profile-0/profile"
+    matches = glob.glob(pattern)
+    return matches[0] if matches else None
+
+
+def _find_gamezone_choices_path():
+    profile = _find_gamezone_profile_path()
+    if profile:
+        choices = os.path.join(os.path.dirname(profile), "choices")
+        if os.path.isfile(choices):
+            return choices
+    return None
+
+
 def _read_file(path):
     try:
         with open(path) as f:
             return f.read().strip()
     except (PermissionError, OSError):
         return None
+
+
+def _write_file_sudo(path, value):
+    """Write a value to a sysfs file using sudo."""
+    try:
+        result = subprocess.run(
+            ["sudo", "tee", path],
+            input=str(value).encode(),
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0, result.stderr.decode().strip()
+    except Exception as e:
+        return False, str(e)
 
 
 def _read_attr(attr_name, field="current_value"):
@@ -64,85 +89,65 @@ def _read_attr_meta(attr_name):
     return meta
 
 
-# ── Thermal mode detection ─────────────────────────────────────
+# ── Thermal mode ────────────────────────────────────────────────
 
 def read_platform_profile():
-    """Read current platform profile (thermal mode indicator)."""
-    return _read_file(PLATFORM_PROFILE)
+    """Read current thermal mode from gamezone driver."""
+    path = _find_gamezone_profile_path()
+    if path:
+        return _read_file(path)
+    return None
 
 
 def read_platform_profile_choices():
-    choices_path = PLATFORM_PROFILE + "_choices"
-    return _read_file(choices_path).split() if os.path.isfile(choices_path) else []
+    path = _find_gamezone_choices_path()
+    if path:
+        return _read_file(path).split()
+    return []
 
 
 def is_custom_mode():
-    """Check if the system is in CUSTOM thermal mode (0xFF).
+    """Check if the system is in CUSTOM thermal mode."""
+    return read_platform_profile() == "custom"
 
-    The kernel lenovo_wmi_other driver requires CUSTOM mode to write EC values.
-    Fn+Q switches to CUSTOM (purple LED). platform_profile may not reflect this
-    because the gamezone driver doesn't expose CUSTOM via platform_profile.
-    We detect CUSTOM by attempting a test write.
+
+def set_platform_profile(mode):
+    """Switch thermal mode via gamezone driver. Requires sudo."""
+    path = _find_gamezone_profile_path()
+    if not path:
+        return False, "Gamezone platform-profile not found"
+    return _write_file_sudo(path, mode)
+
+
+def ensure_custom_mode():
+    """Ensure CUSTOM mode is active. Switches automatically if needed.
+
+    Returns:
+        (bool, str) - (was_already_custom, error_message)
     """
-    pp = read_platform_profile()
-    if pp == "custom":
-        return True
-
-    # platform_profile might not show "custom" even when in custom mode
-    # because the gamezone driver doesn't map it properly.
-    # Try a test write to detect custom mode.
-    base = _find_lenovo_attrs_path()
-    if not base:
-        return False
-
-    # Read a value, modify it slightly, write it back, then restore
-    test_attr = "gpu_nv_cpu_boost"
-    test_path = os.path.join(base, test_attr, "current_value")
-    if not os.path.isfile(test_path):
-        return False
-
-    try:
-        with open(test_path) as f:
-            original = f.read().strip()
-    except (PermissionError, OSError):
-        return False
-
-    # Try writing the same value back (no actual change)
-    try:
-        result = subprocess.run(
-            ["sudo", "tee", test_path],
-            input=original.encode(),
-            capture_output=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            return True
-        stderr = result.stderr.decode().strip()
-        if "busy" in stderr.lower():
-            return False
-        # Other errors might mean different things
-        return False
-    except Exception:
-        return False
+    if is_custom_mode():
+        return True, ""
+    ok, err = set_platform_profile("custom")
+    if not ok:
+        return False, f"Failed to switch to CUSTOM mode: {err}"
+    # Verify
+    if not is_custom_mode():
+        return False, "Switched but CUSTOM mode not confirmed"
+    return False, ""
 
 
 def read_thermal_mode_summary():
     """Return a human-readable summary of the current thermal mode."""
     pp = read_platform_profile()
     if pp == "custom":
-        return "custom", "CUSTOM (Fn+Q 紫灯) - 可写入 EC"
-
-    # Check if actually in custom mode despite platform_profile
-    if is_custom_mode():
-        return "custom", "CUSTOM (Fn+Q 紫灯) - 可写入 EC"
-
+        return "custom", "CUSTOM - 可写入 EC 功率限制"
     mode_desc = {
-        "low-power": "静音 (Fn+Q 白灯) - EC 只读",
-        "balanced": "均衡 (Fn+Q 白灯) - EC 只读",
-        "performance": "性能 (Fn+Q 红灯) - EC 只读",
-        "max-power": "极速 (Fn+Q 红灯) - EC 只读",
+        "low-power": "静音 - EC 功率限制只读",
+        "balanced": "均衡 - EC 功率限制只读",
+        "performance": "性能 - EC 功率限制只读",
+        "max-power": "极速 - EC 功率限制只读",
     }
-    desc = mode_desc.get(pp, f"{pp} - EC 只读")
+    desc = mode_desc.get(pp, f"{pp} - EC 功率限制只读")
     return pp, desc
 
 
@@ -201,24 +206,22 @@ def read_all_ec():
 def apply_all_settings(ec_values, cpu_freq_mhz=None, governor=None, epp=None, platform_profile=None):
     """Apply ALL settings in a single sudo call.
 
+    Automatically switches to CUSTOM mode if EC values need to be written.
+
     Returns:
         (bool, str) - (success, error_message)
     """
-    # Check if helper script exists
     if not os.path.isfile(HELPER_SCRIPT):
         return False, (
             f"Helper script not found: {HELPER_SCRIPT}\n"
             "Run: sudo cp loq-power-apply /usr/local/bin/ && sudo chmod +x /usr/local/bin/loq-power-apply"
         )
 
-    # Check if EC writes are possible (custom mode required)
+    # If EC values need writing, ensure CUSTOM mode first
     if ec_values:
-        custom = is_custom_mode()
-        if not custom:
-            return False, (
-                "EC 写入需要 CUSTOM 模式 (Fn+Q 紫灯)\n"
-                "请先按 Fn+Q 切换到紫灯，再点击应用"
-            )
+        already_custom, err = ensure_custom_mode()
+        if err:
+            return False, err
 
     # Build key=value input for the helper script
     lines = []
@@ -248,7 +251,6 @@ def apply_all_settings(ec_values, cpu_freq_mhz=None, governor=None, epp=None, pl
         if result.returncode != 0:
             stderr = result.stderr.decode().strip()
             stdout = result.stdout.decode().strip()
-            # Check for specific errors
             if "Device or resource busy" in stderr:
                 return False, (
                     "EC 写入失败: 内核要求 CUSTOM 模式\n"

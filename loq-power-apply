@@ -7,7 +7,7 @@ set -e
 
 FIRMWARE_BASE="/sys/class/firmware-attributes"
 CPUFREQ_BASE="/sys/devices/system/cpu"
-PLATFORM_PROFILE="/sys/firmware/acpi/platform_profile"
+ERRORS=""
 
 # Find lenovo attributes path
 find_attrs_path() {
@@ -20,8 +20,20 @@ find_attrs_path() {
     done
 }
 
+# Find gamezone platform-profile path
+find_gamezone_profile() {
+    for d in /sys/bus/wmi/drivers/lenovo_wmi_gamezone/*/; do
+        [ -d "$d" ] || continue
+        local p="$d/platform-profile/platform-profile-0/profile"
+        if [ -f "$p" ]; then
+            echo "$p"
+            return
+        fi
+    done
+}
+
 ATTRS_PATH=$(find_attrs_path)
-ERRORS=""
+GAMEZONE_PROFILE=$(find_gamezone_profile)
 
 while IFS='=' read -r key value; do
     [ -z "$key" ] && continue
@@ -52,8 +64,8 @@ while IFS='=' read -r key value; do
             done
             ;;
         platform_profile)
-            if [ -f "$PLATFORM_PROFILE" ]; then
-                echo "$value" > "$PLATFORM_PROFILE" 2>/dev/null || true
+            if [ -n "$GAMEZONE_PROFILE" ]; then
+                echo "$value" > "$GAMEZONE_PROFILE" 2>/dev/null || true
             fi
             ;;
     esac
