@@ -1,9 +1,9 @@
-"""Power control page with GPU/CPU sliders and status info."""
+"""Power control page with dashboard, GPU/CPU sliders and status info."""
 
 import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GLib
-from gui.widgets import PowerCard, SectionHeader, StatusRow, ProfileButton
+from gui.widgets import PowerCard, SectionHeader, StatusRow, ProfileButton, DashboardCard
 import ec_backend
 import profiles as prof
 
@@ -22,6 +22,7 @@ class PowerPage(Gtk.Box):
         self.profile_buttons = {}
         self._active_profile = None
         self._loading = False
+        self._auto_refresh_id = None
 
         # Scrollable content
         scroll = Gtk.ScrolledWindow()
@@ -32,7 +33,7 @@ class PowerPage(Gtk.Box):
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         scroll.set_child(content)
 
-        # ── Thermal mode banner (always visible) ──
+        # ── Thermal mode banner ──
         self.thermal_banner = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         self.thermal_banner.set_margin_start(12)
         self.thermal_banner.set_margin_end(12)
@@ -72,6 +73,36 @@ class PowerPage(Gtk.Box):
         self.save_btn.add_css_class("flat")
         self.save_btn.connect("clicked", self._on_save_profile)
         profile_bar.append(self.save_btn)
+
+        # ── Dashboard (status on top) ──
+        content.append(SectionHeader("dialog-information", "系统状态"))
+
+        # GPU dashboard card
+        self.gpu_card = DashboardCard("gpu", "GPU")
+        self.gpu_card.add_row("power", "功耗")
+        self.gpu_card.add_row("temp", "温度")
+        self.gpu_card.add_row("util", "利用率")
+        self.gpu_card.add_row("mem", "显存")
+        self.gpu_card.add_row("ec_power", "EC 功率")
+        content.append(self.gpu_card)
+
+        # CPU dashboard card
+        self.cpu_card = DashboardCard("cpu", "CPU")
+        self.cpu_card.add_row("freq", "频率")
+        self.cpu_card.add_row("temp", "温度")
+        self.cpu_card.add_row("gov", "调频策略")
+        self.cpu_card.add_row("epp", "能效偏好")
+        content.append(self.cpu_card)
+
+        # System dashboard card
+        self.sys_card = DashboardCard("computer", "系统")
+        self.sys_card.add_row("fan", "风扇")
+        self.sys_card.add_row("battery", "电池")
+        self.sys_card.add_row("ac", "电源")
+        self.sys_card.add_row("tlp", "TLP")
+        self.sys_card.add_row("nv_powerd", "nvidia-powerd")
+        self.sys_card.add_row("mode", "热模式")
+        content.append(self.sys_card)
 
         # ── GPU section ──
         content.append(SectionHeader("gpu", "GPU 功率控制"))
@@ -160,34 +191,33 @@ class PowerPage(Gtk.Box):
         self.pp_combo.set_active(1)
         pp_box.append(self.pp_combo)
 
-        # ── Status section ──
-        content.append(SectionHeader("dialog-information", "当前状态"))
-
-        self.status_gpu_power = StatusRow("GPU 功率 (nvidia-smi)")
-        content.append(self.status_gpu_power)
-
-        self.status_gpu_limit = StatusRow("GPU 限制")
-        content.append(self.status_gpu_limit)
-
-        self.status_ec_state = StatusRow("EC 状态")
-        content.append(self.status_ec_state)
-
-        self.status_cpu_freq = StatusRow("CPU 频率")
-        content.append(self.status_cpu_freq)
-
-        self.status_fan = StatusRow("风扇转速")
-        content.append(self.status_fan)
-
         # Bottom padding
         bottom_pad = Gtk.Box()
         bottom_pad.set_margin_bottom(24)
         content.append(bottom_pad)
 
         self.refresh()
+        self.start_auto_refresh()
 
-    def _update_thermal_banner(self):
+    def start_auto_refresh(self):
+        """Start auto-refreshing dashboard data every 3 seconds."""
+        if self._auto_refresh_id is None:
+            self._auto_refresh_id = GLib.timeout_add_seconds(3, self._auto_refresh_tick)
+
+    def stop_auto_refresh(self):
+        """Stop auto-refresh."""
+        if self._auto_refresh_id is not None:
+            GLib.source_remove(self._auto_refresh_id)
+            self._auto_refresh_id = None
+
+    def _auto_refresh_tick(self):
+        """Auto-refresh callback - only updates dashboard, not sliders."""
+        if not self._loading:
+            self._refresh_dashboard()
+        return True  # Continue polling
+
+    def _update_thermal_banner(self, mode):
         """Update the thermal mode banner based on current state."""
-        mode, desc = ec_backend.read_thermal_mode_summary()
         if mode == "custom":
             self.thermal_icon.set_from_icon_name("emblem-ok-symbolic")
             self.thermal_label.set_text("CUSTOM 模式 - EC 功率限制可写入")
@@ -196,26 +226,104 @@ class PowerPage(Gtk.Box):
         else:
             self.thermal_icon.set_from_icon_name("dialog-warning-symbolic")
             self.thermal_label.set_text(
-                f"当前: {desc}\n"
+                f"当前: {mode} - EC 功率限制只读\n"
                 "点击「应用」时会自动切换到 CUSTOM 模式"
             )
             self.thermal_banner.remove_css_class("success")
             self.thermal_banner.add_css_class("warning")
 
+    def _refresh_dashboard(self):
+        """Refresh only the dashboard status cards (fast, no sliders)."""
+        d = ec_backend.read_dashboard()
+
+        # Thermal banner
+        self._update_thermal_banner(d["mode"])
+
+        # GPU card
+        gpu = d["gpu"]
+        if gpu:
+            self.gpu_card.set_value("power", f"{gpu['power_draw']:.1f} W")
+            self.gpu_card.set_value("temp", f"{gpu['temp']}°C")
+            self.gpu_card.set_value("util", f"{gpu['gpu_util']}%")
+            self.gpu_card.set_value("mem", f"{gpu['mem_used']} / {gpu['mem_total']} MiB")
+        else:
+            self.gpu_card.set_value("power", "N/A")
+            self.gpu_card.set_value("temp", "N/A")
+            self.gpu_card.set_value("util", "N/A")
+            self.gpu_card.set_value("mem", "N/A")
+
+        # EC GPU power summary
+        ec = d["ec"]
+        ctgp = ec.get("gpu_nv_ctgp", {}).get("value")
+        ppab = ec.get("gpu_nv_ppab", {}).get("value")
+        if ctgp is not None and ppab is not None:
+            self.gpu_card.set_value("ec_power", f"cTGP {ctgp}W + PPAB {ppab}W")
+        else:
+            self.gpu_card.set_value("ec_power", "N/A")
+
+        # CPU card
+        cpu = d["cpu"]
+        cpu_freq = cpu.get("scaling_max_freq")
+        cpu_max = cpu.get("cpuinfo_max_freq")
+        if cpu_freq and cpu_max:
+            self.cpu_card.set_value("freq", f"{int(cpu_freq) // 1000} / {int(cpu_max) // 1000} MHz")
+        else:
+            self.cpu_card.set_value("freq", "N/A")
+
+        self.cpu_card.set_value("temp", f"{d['cpu_temp']}°C" if d["cpu_temp"] else "N/A")
+        self.cpu_card.set_value("gov", cpu.get("scaling_governor", "N/A"))
+        self.cpu_card.set_value("epp", cpu.get("energy_performance_preference", "N/A"))
+
+        # System card
+        fan = d["fan"]
+        if fan:
+            fan_strs = [f"{v} RPM" for v in fan.values()]
+            self.sys_card.set_value("fan", " | ".join(fan_strs))
+        else:
+            self.sys_card.set_value("fan", "N/A")
+
+        bat = d["battery"]
+        if bat.get("capacity") is not None:
+            bat_str = f"{bat['capacity']}%"
+            if bat.get("status"):
+                bat_str += f" ({bat['status']})"
+            self.sys_card.set_value("battery", bat_str)
+        else:
+            self.sys_card.set_value("battery", "N/A")
+
+        ac = d["ac_power"]
+        self.sys_card.set_value("ac", "AC 通电" if ac else "电池供电" if ac is not None else "N/A")
+
+        tlp = d["tlp"]
+        self.sys_card.set_value("tlp", "active" if tlp else "inactive" if tlp is not None else "N/A")
+
+        nv = d["nv_powerd"]
+        self.sys_card.set_value("nv_powerd", "active" if nv else "inactive" if nv is not None else "N/A")
+
+        mode = d["mode"]
+        mode_labels = {
+            "custom": "CUSTOM ✓",
+            "balanced": "均衡",
+            "performance": "性能",
+            "max-power": "极速",
+            "low-power": "静音",
+        }
+        self.sys_card.set_value("mode", mode_labels.get(mode, mode or "N/A"))
+
     def refresh(self):
         """Reload all values from hardware."""
         self._loading = True
 
-        # Update thermal mode banner
-        self._update_thermal_banner()
+        # Refresh dashboard
+        self._refresh_dashboard()
 
-        # Read EC
+        # Read EC for sliders
         self.ec_data = ec_backend.read_all_ec()
         for attr_name, data in self.ec_data.items():
             if attr_name in self.cards:
                 self.cards[attr_name].set_value(data["value"])
 
-        # Read CPU
+        # Read CPU for sliders
         self.cpu_data = ec_backend.read_cpu_freq()
         max_freq_mhz = None
         if "scaling_max_freq" in self.cpu_data:
@@ -240,46 +348,6 @@ class PowerPage(Gtk.Box):
                 if c == pp:
                     self.pp_combo.set_active(i)
                     break
-
-        # NVIDIA
-        self.nvidia_data = ec_backend.read_nvidia_power() or {}
-        gpu_power = self.nvidia_data.get("power_draw")
-        gpu_limit = self.nvidia_data.get("current_power_limit")
-        gpu_max = self.nvidia_data.get("max_power_limit")
-
-        self.status_gpu_power.set_value(f"{gpu_power:.1f} W" if gpu_power is not None else "N/A")
-
-        if gpu_limit is not None:
-            limit_str = f"{gpu_limit:.0f} W"
-            if gpu_max:
-                limit_str += f" / 最大 {gpu_max:.0f} W"
-            self.status_gpu_limit.set_value(limit_str)
-        else:
-            self.status_gpu_limit.set_value("N/A")
-
-        ctgp = self.ec_data.get("gpu_nv_ctgp", {}).get("value")
-        ppab = self.ec_data.get("gpu_nv_ppab", {}).get("value")
-        if ctgp is not None and ppab is not None:
-            self.status_ec_state.set_value(f"cTGP={ctgp}W + PPAB={ppab}W = {ctgp + ppab}W")
-        else:
-            self.status_ec_state.set_value("EC 未就绪")
-
-        cur_freq = self.cpu_data.get("scaling_max_freq")
-        info_max = self.cpu_data.get("cpuinfo_max_freq")
-        if cur_freq and info_max:
-            self.status_cpu_freq.set_value(
-                f"{int(cur_freq) // 1000} MHz / {int(info_max) // 1000} MHz"
-            )
-        else:
-            self.status_cpu_freq.set_value("N/A")
-
-        # Fan info
-        fan_info = ec_backend.read_fan_info()
-        if fan_info:
-            fan_strs = [f"Fan{k}: {v} RPM" for k, v in sorted(fan_info.items())]
-            self.status_fan.set_value(" | ".join(fan_strs))
-        else:
-            self.status_fan.set_value("N/A")
 
         self._loading = False
 

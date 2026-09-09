@@ -353,3 +353,145 @@ def read_fan_info():
                         except ValueError:
                             pass
     return result
+
+
+# ── GPU full info (nvidia-smi) ──────────────────────────────────
+
+def read_gpu_full():
+    """Read comprehensive GPU info from nvidia-smi."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=name,temperature.gpu,utilization.gpu,utilization.memory,"
+             "memory.used,memory.total,power.draw",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return None
+        parts = result.stdout.strip().split(", ")
+        if len(parts) < 7:
+            return None
+        return {
+            "name": parts[0],
+            "temp": int(parts[1]),
+            "gpu_util": int(parts[2]),
+            "mem_util": int(parts[3]),
+            "mem_used": int(parts[4]),
+            "mem_total": int(parts[5]),
+            "power_draw": float(parts[6]),
+        }
+    except Exception:
+        return None
+
+
+# ── CPU temperature ─────────────────────────────────────────────
+
+def read_cpu_temp():
+    """Read CPU temperature from thermal zones."""
+    try:
+        for zone_dir in sorted(os.listdir("/sys/class/thermal")):
+            if not zone_dir.startswith("thermal_zone"):
+                continue
+            zone_path = os.path.join("/sys/class/thermal", zone_dir)
+            zone_type = _read_file(os.path.join(zone_path, "type"))
+            temp_raw = _read_file(os.path.join(zone_path, "temp"))
+            if zone_type and temp_raw:
+                try:
+                    return zone_type, int(temp_raw) // 1000
+                except ValueError:
+                    pass
+    except OSError:
+        pass
+    return None, None
+
+
+# ── Battery info ────────────────────────────────────────────────
+
+def read_battery():
+    """Read battery info from sysfs."""
+    result = {}
+    for ps_dir in os.listdir("/sys/class/power_supply"):
+        if not ps_dir.startswith("BAT"):
+            continue
+        ps_path = os.path.join("/sys/class/power_supply", ps_dir)
+        capacity = _read_file(os.path.join(ps_path, "capacity"))
+        status = _read_file(os.path.join(ps_path, "status"))
+        voltage = _read_file(os.path.join(ps_path, "voltage_now"))
+        energy = _read_file(os.path.join(ps_path, "energy_now"))
+        if capacity:
+            try:
+                result["capacity"] = int(capacity)
+            except ValueError:
+                pass
+        if status:
+            result["status"] = status
+        if voltage:
+            try:
+                result["voltage"] = int(voltage) // 1000000
+            except ValueError:
+                pass
+        if energy:
+            try:
+                result["energy_wh"] = int(energy) // 1000
+            except ValueError:
+                pass
+        break
+    return result
+
+
+# ── AC adapter ──────────────────────────────────────────────────
+
+def read_ac_status():
+    """Read AC adapter status."""
+    for ps_dir in os.listdir("/sys/class/power_supply"):
+        ps_path = os.path.join("/sys/class/power_supply", ps_dir)
+        ps_type = _read_file(os.path.join(ps_path, "type"))
+        if ps_type == "Mains":
+            online = _read_file(os.path.join(ps_path, "online"))
+            return online == "1"
+    return None
+
+
+# ── Service status ──────────────────────────────────────────────
+
+def read_service_status(service_name):
+    """Check if a systemd service is active."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", service_name],
+            capture_output=True, text=True, timeout=3,
+        )
+        return result.stdout.strip() == "active"
+    except Exception:
+        return None
+
+
+# ── System dashboard data ───────────────────────────────────────
+
+def read_dashboard():
+    """Read all dashboard data in one call for efficiency."""
+    gpu = read_gpu_full()
+    cpu_temp_name, cpu_temp = read_cpu_temp()
+    battery = read_battery()
+    ac = read_ac_status()
+    fan = read_fan_info()
+    cpu = read_cpu_freq()
+    ec = read_all_ec()
+    tlp = read_service_status("tlp")
+    nv_powerd = read_service_status("nvidia-powerd")
+    mode = read_platform_profile()
+
+    return {
+        "gpu": gpu,
+        "cpu_temp_name": cpu_temp_name,
+        "cpu_temp": cpu_temp,
+        "battery": battery,
+        "ac_power": ac,
+        "fan": fan,
+        "cpu": cpu,
+        "ec": ec,
+        "tlp": tlp,
+        "nv_powerd": nv_powerd,
+        "mode": mode,
+    }

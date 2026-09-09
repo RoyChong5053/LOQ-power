@@ -159,3 +159,70 @@ class ProfileButton(Gtk.ToggleButton):
         super().__init__(label=profile_name)
         self.profile_name = profile_name
         self.add_css_class("suggested-action")
+
+
+class DashboardRow(Gtk.Box):
+    """A single row in the dashboard: label + value, compact layout."""
+
+    def __init__(self, label_text, value_text="--"):
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.set_margin_top(1)
+        self.set_margin_bottom(1)
+
+        self._label = Gtk.Label(label=label_text, xalign=0)
+        self._label.set_hexpand(True)
+        self._label.add_css_class("caption")
+        self._label.add_css_class("dim-label")
+        self.append(self._label)
+
+        self._value = Gtk.Label(label=value_text, xalign=1)
+        self._value.add_css_class("caption")
+        self._value.add_css_class("numeric")
+        self.append(self._value)
+
+    def set_value(self, text):
+        self._value.set_text(str(text))
+
+    def set_value_css(self, css_class):
+        self._value.add_css_class(css_class)
+
+
+class DashboardCard(Gtk.Box):
+    """A card containing a section title and multiple DashboardRows."""
+
+    def __init__(self, icon_name, title):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.set_margin_start(12)
+        self.set_margin_end(12)
+        self.set_margin_top(6)
+        self.set_margin_bottom(2)
+        self.add_css_class("dashboard-card")
+
+        # Section header
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.append(header)
+
+        icon = Gtk.Image.new_from_icon_name(icon_name)
+        icon.set_pixel_size(14)
+        header.append(icon)
+
+        label = Gtk.Label(label=title, xalign=0)
+        label.add_css_class("title-4")
+        header.append(label)
+
+        # Rows container
+        self._rows_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._rows_box.set_margin_start(20)
+        self.append(self._rows_box)
+
+        self._rows = {}
+
+    def add_row(self, key, label, value="--"):
+        row = DashboardRow(label, value)
+        self._rows[key] = row
+        self._rows_box.append(row)
+        return row
+
+    def set_value(self, key, text):
+        if key in self._rows:
+            self._rows[key].set_value(text)

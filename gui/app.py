@@ -30,7 +30,7 @@ class LOQPowerWindow(Gtk.ApplicationWindow):
         super().__init__(
             title="LOQ Power Control",
             default_width=520,
-            default_height=720,
+            default_height=860,
             **kwargs,
         )
 
