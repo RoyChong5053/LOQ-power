@@ -8,36 +8,64 @@ FIRMWARE_ATTRS_BASE = "/sys/class/firmware-attributes"
 CPUFREQ_BASE = "/sys/devices/system/cpu"
 HELPER_SCRIPT = "/usr/local/bin/loq-power-apply"
 
+# Cached sysfs paths (avoid re-scanning on every 3s dashboard tick)
+_ATTRS_PATH_CACHE = None
+_GAMEZONE_PROFILE_CACHE = None
+_GAMEZONE_CHOICES_CACHE = None
+
+# Service-status cache (systemctl is slow ~50-200ms each)
+_SERVICE_CACHE = {}
+_SERVICE_CACHE_TS = {}
+_SERVICE_CACHE_TTL = 30  # seconds
+
+# Custom 模式的风扇基底：按用户决策固定为 balanced
+# (performance/max-power 在 Linux 下风扇直接拉满 5k RPM，无转速控制)
+CUSTOM_FAN_BASIS = "balanced"
+
 
 def _find_lenovo_attrs_path():
-    """Find the lenovo-wmi-other attributes path."""
+    """Find the lenovo-wmi-other attributes path (cached)."""
+    global _ATTRS_PATH_CACHE
+    if _ATTRS_PATH_CACHE is not None:
+        return _ATTRS_PATH_CACHE
     if not os.path.isdir(FIRMWARE_ATTRS_BASE):
         return None
     for name in os.listdir(FIRMWARE_ATTRS_BASE):
         if "lenovo-wmi-other" in name:
             path = os.path.join(FIRMWARE_ATTRS_BASE, name, "attributes")
             if os.path.isdir(path):
+                _ATTRS_PATH_CACHE = path
                 return path
     return None
 
 
 def _find_gamezone_profile_path():
-    """Find the gamezone platform-profile path.
+    """Find the gamezone platform-profile path (cached).
 
     On LOQ models, the gamezone WMI driver exposes the thermal mode
     through a platform-profile device. This is the ONLY way to switch
     to CUSTOM mode programmatically (Fn+Q doesn't reach CUSTOM on LOQ).
     """
+    global _GAMEZONE_PROFILE_CACHE
+    if _GAMEZONE_PROFILE_CACHE is not None:
+        return _GAMEZONE_PROFILE_CACHE
     pattern = "/sys/bus/wmi/drivers/lenovo_wmi_gamezone/*/platform-profile/platform-profile-0/profile"
     matches = glob.glob(pattern)
-    return matches[0] if matches else None
+    if matches:
+        _GAMEZONE_PROFILE_CACHE = matches[0]
+        return matches[0]
+    return None
 
 
 def _find_gamezone_choices_path():
+    global _GAMEZONE_CHOICES_CACHE
+    if _GAMEZONE_CHOICES_CACHE is not None:
+        return _GAMEZONE_CHOICES_CACHE
     profile = _find_gamezone_profile_path()
     if profile:
         choices = os.path.join(os.path.dirname(profile), "choices")
         if os.path.isfile(choices):
+            _GAMEZONE_CHOICES_CACHE = choices
             return choices
     return None
 
@@ -120,13 +148,23 @@ def set_platform_profile(mode):
 
 
 def ensure_custom_mode():
-    """Ensure CUSTOM mode is active. Switches automatically if needed.
+    """Ensure CUSTOM mode with balanced fan basis.
+
+    软件切 custom 不改变 EC 风扇策略（风扇停留在上次 Fn+Q）。
+    为保证 custom 下风扇可控，先切到 balanced（风扇正常温控），
+    再切 custom（仅打开 EC 写权限）。performance/max-power 在
+    Linux 下风扇直接拉满，不适合做 custom 基底。
 
     Returns:
         (bool, str) - (was_already_custom, error_message)
     """
     if is_custom_mode():
         return True, ""
+    # Step 1: fan basis -> balanced (so custom inherits sane fan curve)
+    ok, err = set_platform_profile(CUSTOM_FAN_BASIS)
+    if not ok:
+        return False, f"Failed to set fan basis ({CUSTOM_FAN_BASIS}): {err}"
+    # Step 2: balanced -> custom (unlock EC writes, fan stays)
     ok, err = set_platform_profile("custom")
     if not ok:
         return False, f"Failed to switch to CUSTOM mode: {err}"
@@ -134,6 +172,18 @@ def ensure_custom_mode():
     if not is_custom_mode():
         return False, "Switched but CUSTOM mode not confirmed"
     return False, ""
+
+
+def get_fan_basis():
+    """Return effective fan basis.
+
+    custom 本身无独立风扇曲线，返回固定基底 balanced；
+    其他模式返回自身。
+    """
+    mode = read_platform_profile()
+    if mode == "custom":
+        return CUSTOM_FAN_BASIS
+    return mode
 
 
 def read_thermal_mode_summary():
@@ -156,7 +206,7 @@ def read_thermal_mode_summary():
 EC_ATTRIBUTES = {
     "gpu_nv_ctgp": {"name": "GPU cTGP", "desc": "可配置总图形功率", "unit": "W"},
     "gpu_nv_ppab": {"name": "GPU PPAB", "desc": "功率加速", "unit": "W"},
-    "gpu_nv_ac_offset": {"name": "GPU AC Offset", "desc": "总功率偏移", "unit": "W"},
+    "gpu_nv_ac_offset": {"name": "GPU AC Offset", "desc": "适配器功率偏移(仅插电有效)", "unit": "W"},
     "gpu_nv_cpu_boost": {"name": "GPU→CPU Boost", "desc": "动态加速", "unit": "W"},
     "gpu_temp": {"name": "GPU 温度限制", "desc": "GPU 热负载限制", "unit": "°C"},
     "ppt_pl1_spl": {"name": "CPU PL1", "desc": "持续功率限制", "unit": "W"},
@@ -204,9 +254,13 @@ def read_all_ec():
 # ── Apply settings ─────────────────────────────────────────────
 
 def apply_all_settings(ec_values, cpu_freq_mhz=None, governor=None, epp=None, platform_profile=None):
-    """Apply ALL settings in a single sudo call.
+    """Apply settings in a single sudo call.
 
-    Automatically switches to CUSTOM mode if EC values need to be written.
+    Custom 是独立模式：target 由 UI 的平台下拉决定。
+      - target == "custom" (或 None): 切 custom（均衡风扇基底）-> 写 EC -> 停住
+      - target == 其他: 切 custom -> 写 EC -> 切回 target（EC值持久保留）
+
+    EC 值做 diff：只写与当前值不同的项，减少 EBUSY/磨损。
 
     Returns:
         (bool, str) - (success, error_message)
@@ -217,15 +271,31 @@ def apply_all_settings(ec_values, cpu_freq_mhz=None, governor=None, epp=None, pl
             "Run: sudo cp loq-power-apply /usr/local/bin/ && sudo chmod +x /usr/local/bin/loq-power-apply"
         )
 
-    # If EC values need writing, ensure CUSTOM mode first
+    target = platform_profile or "custom"
+
+    # Diff EC values against hardware: skip unchanged
+    filtered_ec = {}
     if ec_values:
+        for attr_name, value in ec_values.items():
+            if attr_name not in EC_ATTRIBUTES:
+                continue
+            try:
+                cur = read_ec_value(attr_name)
+            except Exception:
+                cur = None
+            if cur is None or int(cur) != int(value):
+                filtered_ec[attr_name] = value
+
+    # If EC values need writing, ensure CUSTOM mode first (balanced fan basis)
+    if filtered_ec:
         already_custom, err = ensure_custom_mode()
         if err:
             return False, err
 
-    # Build key=value input for the helper script
+    # Build key=value input for the helper script.
+    # NOTE: platform_profile must be LAST (helper enforces EC-first order).
     lines = []
-    for attr_name, value in ec_values.items():
+    for attr_name, value in filtered_ec.items():
         lines.append(f"ec_{attr_name}={value}")
     if cpu_freq_mhz is not None:
         lines.append(f"cpu_max_freq={cpu_freq_mhz * 1000}")
@@ -233,8 +303,9 @@ def apply_all_settings(ec_values, cpu_freq_mhz=None, governor=None, epp=None, pl
         lines.append(f"cpu_governor={governor}")
     if epp:
         lines.append(f"cpu_epp={epp}")
-    if platform_profile:
-        lines.append(f"platform_profile={platform_profile}")
+    # Target mode always sent last so helper writes it after EC values.
+    # "custom" target = stay in custom (fan basis already balanced).
+    lines.append(f"platform_profile={target}")
 
     if not lines:
         return False, "No settings to apply"
@@ -387,20 +458,72 @@ def read_gpu_full():
 
 # ── CPU temperature ─────────────────────────────────────────────
 
-def read_cpu_temp():
-    """Read CPU temperature from thermal zones."""
+def _read_hwmon_cpu_temp():
+    """Prefer k10temp/zenpower (Tctl/Tdie), the real CPU sensor.
+
+    thermal_zone0 on this LOQ is acpitz (motherboard), not CPU.
+    """
     try:
+        for hwmon_dir in sorted(os.listdir("/sys/class/hwmon")):
+            hwmon_path = os.path.join("/sys/class/hwmon", hwmon_dir)
+            name_file = os.path.join(hwmon_path, "name")
+            if not os.path.isfile(name_file):
+                continue
+            name = _read_file(name_file)
+            if name not in ("k10temp", "zenpower", "k8temp"):
+                continue
+            best = None
+            for fname in sorted(os.listdir(hwmon_path)):
+                if not (fname.startswith("temp") and fname.endswith("_input")):
+                    continue
+                prefix = fname[:-len("_input")]
+                label = _read_file(os.path.join(hwmon_path, prefix + "_label"))
+                # Prefer Tctl/Tdie/Tccd over composite readings
+                val_raw = _read_file(os.path.join(hwmon_path, fname))
+                if not val_raw:
+                    continue
+                try:
+                    temp_c = int(val_raw) // 1000
+                except ValueError:
+                    continue
+                if label in ("Tctl", "Tdie"):
+                    return name, temp_c
+                if best is None:
+                    best = (name, temp_c)
+            if best is not None:
+                return best
+    except OSError:
+        pass
+    return None, None
+
+
+def read_cpu_temp():
+    """Read CPU temperature: k10temp first, thermal zones fallback (skip acpitz)."""
+    name, temp = _read_hwmon_cpu_temp()
+    if temp is not None:
+        return name, temp
+    try:
+        fallback = None
         for zone_dir in sorted(os.listdir("/sys/class/thermal")):
             if not zone_dir.startswith("thermal_zone"):
                 continue
             zone_path = os.path.join("/sys/class/thermal", zone_dir)
             zone_type = _read_file(os.path.join(zone_path, "type"))
             temp_raw = _read_file(os.path.join(zone_path, "temp"))
-            if zone_type and temp_raw:
-                try:
-                    return zone_type, int(temp_raw) // 1000
-                except ValueError:
-                    pass
+            if not (zone_type and temp_raw):
+                continue
+            try:
+                temp_c = int(temp_raw) // 1000
+            except ValueError:
+                continue
+            if zone_type == "acpitz":
+                # Motherboard sensor: keep only as last resort
+                if fallback is None:
+                    fallback = (zone_type, temp_c)
+                continue
+            return zone_type, temp_c
+        if fallback is not None:
+            return fallback
     except OSError:
         pass
     return None, None
@@ -456,13 +579,21 @@ def read_ac_status():
 # ── Service status ──────────────────────────────────────────────
 
 def read_service_status(service_name):
-    """Check if a systemd service is active."""
+    """Check if a systemd service is active (cached 30s; systemctl is slow)."""
+    import time
+    now = time.monotonic()
+    ts = _SERVICE_CACHE_TS.get(service_name)
+    if ts is not None and (now - ts) < _SERVICE_CACHE_TTL and service_name in _SERVICE_CACHE:
+        return _SERVICE_CACHE[service_name]
     try:
         result = subprocess.run(
             ["systemctl", "is-active", service_name],
             capture_output=True, text=True, timeout=3,
         )
-        return result.stdout.strip() == "active"
+        active = result.stdout.strip() == "active"
+        _SERVICE_CACHE[service_name] = active
+        _SERVICE_CACHE_TS[service_name] = now
+        return active
     except Exception:
         return None
 
@@ -514,6 +645,7 @@ def read_dashboard():
     tlp = read_service_status("tlp")
     nv_powerd = read_service_status("nvidia-powerd")
     mode = read_platform_profile()
+    fan_basis = CUSTOM_FAN_BASIS if mode == "custom" else mode
     charge_type, charge_choices = read_battery_charge_type()
 
     return {
@@ -528,6 +660,7 @@ def read_dashboard():
         "tlp": tlp,
         "nv_powerd": nv_powerd,
         "mode": mode,
+        "fan_basis": fan_basis,
         "charge_type": charge_type,
         "charge_choices": charge_choices,
     }

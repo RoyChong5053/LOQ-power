@@ -55,6 +55,22 @@ DEFAULT_PROFILES = {
         "cpu_epp": "performance",
         "platform_profile": "performance",
     },
+    "自定义": {
+        "gpu_nv_ctgp": 60,
+        "gpu_nv_ppab": 15,
+        "gpu_nv_ac_offset": 45,
+        "gpu_nv_cpu_boost": 5,
+        "gpu_temp": 85,
+        "ppt_pl1_spl": 45,
+        "ppt_pl2_sppt": 50,
+        "ppt_pl3_fppt": 55,
+        "ppt_cpu_cl": 45,
+        "cpu_temp": 90,
+        "cpu_scaling_max_freq": 4000000,
+        "cpu_governor": "performance",
+        "cpu_epp": "balance_power",
+        "platform_profile": "custom",
+    },
 }
 
 

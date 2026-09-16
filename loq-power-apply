@@ -2,6 +2,10 @@
 # LOQ Power Control helper script
 # Reads key=value pairs from stdin and writes to sysfs
 # Usage: echo "key=val" | loq-power-apply
+#
+# Ordering guarantee: EC values are ALWAYS written before platform_profile,
+# because EC writes require CUSTOM mode and switching mode first would
+# make them fail with EBUSY.
 
 set -e
 
@@ -35,41 +39,85 @@ find_gamezone_profile() {
 ATTRS_PATH=$(find_attrs_path)
 GAMEZONE_PROFILE=$(find_gamezone_profile)
 
+# Buffer stdin: EC/cpu lines first, platform_profile last
+EC_LINES=""
+CPU_FREQ_VAL=""
+CPU_GOV_VAL=""
+CPU_EPP_VAL=""
+PLATFORM_VAL=""
+
 while IFS='=' read -r key value; do
     [ -z "$key" ] && continue
-
+    # Strip possible carriage return
+    value="${value%$'\r'}"
     case "$key" in
-        ec_*)
-            attr="${key#ec_}"
-            fpath="$ATTRS_PATH/$attr/current_value"
-            if [ -f "$fpath" ]; then
-                if ! echo "$value" > "$fpath" 2>/tmp/loq-err; then
-                    ERRORS="${ERRORS}${attr}: $(cat /tmp/loq-err)\n"
-                fi
-            fi
-            ;;
-        cpu_max_freq)
-            for cpu_path in "$CPUFREQ_BASE"/cpu*/cpufreq/scaling_max_freq; do
-                [ -f "$cpu_path" ] && echo "$value" > "$cpu_path" 2>/dev/null || true
-            done
-            ;;
-        cpu_governor)
-            for cpu_path in "$CPUFREQ_BASE"/cpu*/cpufreq/scaling_governor; do
-                [ -f "$cpu_path" ] && echo "$value" > "$cpu_path" 2>/dev/null || true
-            done
-            ;;
-        cpu_epp)
-            for cpu_path in "$CPUFREQ_BASE"/cpu*/cpufreq/energy_performance_preference; do
-                [ -f "$cpu_path" ] && echo "$value" > "$cpu_path" 2>/dev/null || true
-            done
-            ;;
-        platform_profile)
-            if [ -n "$GAMEZONE_PROFILE" ]; then
-                echo "$value" > "$GAMEZONE_PROFILE" 2>/dev/null || true
-            fi
-            ;;
+        ec_*) EC_LINES="${EC_LINES}${key}=${value}
+";;
+        cpu_max_freq) CPU_FREQ_VAL="$value" ;;
+        cpu_governor) CPU_GOV_VAL="$value" ;;
+        cpu_epp) CPU_EPP_VAL="$value" ;;
+        platform_profile) PLATFORM_VAL="$value" ;;
     esac
 done
+
+# 1. EC values (require CUSTOM mode)
+while IFS='=' read -r key value; do
+    [ -z "$key" ] && continue
+    attr="${key#ec_}"
+    fpath="$ATTRS_PATH/$attr/current_value"
+    if [ -f "$fpath" ]; then
+        if ! echo "$value" > "$fpath" 2>/tmp/loq-err; then
+            ERRORS="${ERRORS}${attr}: $(cat /tmp/loq-err)\n"
+        fi
+    else
+        ERRORS="${ERRORS}${attr}: attribute not found\n"
+    fi
+done <<< "$EC_LINES"
+
+# 2. CPU settings (best effort per-core, but report if ALL fail)
+if [ -n "$CPU_FREQ_VAL" ]; then
+    _ok=0; _total=0
+    for cpu_path in "$CPUFREQ_BASE"/cpu*/cpufreq/scaling_max_freq; do
+        [ -f "$cpu_path" ] || continue
+        _total=$((_total+1))
+        if echo "$CPU_FREQ_VAL" > "$cpu_path" 2>/dev/null; then _ok=$((_ok+1)); fi
+    done
+    [ "$_total" -eq 0 ] && ERRORS="${ERRORS}cpu_max_freq: no cpufreq nodes\n"
+    [ "$_total" -gt 0 ] && [ "$_ok" -eq 0 ] && ERRORS="${ERRORS}cpu_max_freq: write failed on all $_total cpus\n"
+fi
+
+if [ -n "$CPU_GOV_VAL" ]; then
+    _ok=0; _total=0
+    for cpu_path in "$CPUFREQ_BASE"/cpu*/cpufreq/scaling_governor; do
+        [ -f "$cpu_path" ] || continue
+        _total=$((_total+1))
+        if echo "$CPU_GOV_VAL" > "$cpu_path" 2>/dev/null; then _ok=$((_ok+1)); fi
+    done
+    [ "$_total" -eq 0 ] && ERRORS="${ERRORS}cpu_governor: no cpufreq nodes\n"
+    [ "$_total" -gt 0 ] && [ "$_ok" -eq 0 ] && ERRORS="${ERRORS}cpu_governor: write failed (unsupported governor?)\n"
+fi
+
+if [ -n "$CPU_EPP_VAL" ]; then
+    _ok=0; _total=0
+    for cpu_path in "$CPUFREQ_BASE"/cpu*/cpufreq/energy_performance_preference; do
+        [ -f "$cpu_path" ] || continue
+        _total=$((_total+1))
+        if echo "$CPU_EPP_VAL" > "$cpu_path" 2>/dev/null; then _ok=$((_ok+1)); fi
+    done
+    # EPP node may not exist on some drivers: only error if nodes exist but all fail
+    [ "$_total" -gt 0 ] && [ "$_ok" -eq 0 ] && ERRORS="${ERRORS}cpu_epp: write failed\n"
+fi
+
+# 3. Platform profile LAST (switching away from custom locks EC again)
+if [ -n "$PLATFORM_VAL" ]; then
+    if [ -n "$GAMEZONE_PROFILE" ]; then
+        if ! echo "$PLATFORM_VAL" > "$GAMEZONE_PROFILE" 2>/tmp/loq-err; then
+            ERRORS="${ERRORS}platform_profile: $(cat /tmp/loq-err)\n"
+        fi
+    else
+        ERRORS="${ERRORS}platform_profile: gamezone profile not found\n"
+    fi
+fi
 
 if [ -n "$ERRORS" ]; then
     echo -e "$ERRORS" >&2

@@ -76,23 +76,46 @@ class PowerCard(Gtk.Box):
         min_label.add_css_class("caption")
         min_label.add_css_class("dim-label")
         footer.append(min_label)
+        self._min_label = min_label
 
         footer.append(Gtk.Box())  # spacer
 
         if default is not None:
             def_label = Gtk.Label(label=f"默认 {default}{unit}", xalign=0.5)
-            def_label.add_css_class("caption")
-            def_label.add_css_class("accent")
-            footer.append(def_label)
-            footer.append(Gtk.Box())  # spacer
+        else:
+            def_label = Gtk.Label(label="", xalign=0.5)
+        def_label.add_css_class("caption")
+        def_label.add_css_class("accent")
+        footer.append(def_label)
+        self._def_label = def_label
+        footer.append(Gtk.Box())  # spacer
 
         max_label = Gtk.Label(label=f"{max_val}{unit}", xalign=1)
         max_label.add_css_class("caption")
         max_label.add_css_class("dim-label")
         footer.append(max_label)
+        self._max_label = max_label
 
         if current is not None:
             self.set_value(current)
+
+    def set_range(self, min_val, max_val, default=None):
+        """Update slider range from EC min/max/default metadata."""
+        if min_val is None or max_val is None:
+            return
+        self.min_val = min_val
+        self.max_val = max_val
+        self.default_val = default
+        # Clamp current value into new range to avoid out-of-range writes
+        cur = self.get_value()
+        clamped = max(min_val, min(max_val, cur))
+        self.slider.set_range(min_val, max_val)
+        self._min_label.set_text(f"{min_val}{self.unit}")
+        self._max_label.set_text(f"{max_val}{self.unit}")
+        if default is not None:
+            self._def_label.set_text(f"默认 {default}{self.unit}")
+        if clamped != cur:
+            self.set_value(clamped)
 
     def set_value(self, val):
         if val is not None:
@@ -273,12 +296,15 @@ class ThermalBanner(Gtk.Box):
 
         self._current_mode = None
 
-    def set_mode(self, mode, custom_active=False):
+    def set_mode(self, mode, custom_active=False, fan_basis="balanced"):
         """Update banner for the given mode.
 
         Args:
             mode: The Fn+Q mode (low-power/balanced/performance/max-power)
             custom_active: Whether CUSTOM mode is active for EC writes
+            fan_basis: Effective fan basis when custom (fixed to balanced:
+                performance/max-power spin fans to max ~5k RPM on Linux
+                with no speed control, unsuitable as custom basis)
         """
         self._current_mode = mode
         info = self.MODE_STYLES.get(mode, self.MODE_STYLES["balanced"])
@@ -300,8 +326,9 @@ class ThermalBanner(Gtk.Box):
 
         # Build label text
         if custom_active:
+            basis_info = self.MODE_STYLES.get(fan_basis, info)
             self._label.set_text(
-                f"{info['led']} {info['label']}模式  ✓ EC 功率已激活"
+                f"{basis_info['led']} {basis_info['label']}风扇基底  ✓ EC 功率已激活 (Custom)"
             )
         else:
             self._label.set_text(

@@ -4,29 +4,17 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
   <vendor>LOQ Power</vendor>
-  <vendor_url>https://github.com/roychong/LOQ-power</vendor_url>
+  <vendor_url>https://github.com/RoyChong5053/LOQ-power</vendor_url>
 
-  <action id="com.github.loq-power.write-ec">
-    <description>Write EC firmware power settings</description>
-    <message>Authentication is required to modify EC power settings</message>
+  <action id="com.github.loq-power.apply-settings">
+    <description>Apply power settings for Lenovo LOQ laptop</description>
+    <message>Authentication is required to modify power settings</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/tee</annotate>
-    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
-  </action>
-
-  <action id="com.github.loq-power.write-cpu">
-    <description>Write CPU frequency scaling settings</description>
-    <message>Authentication is required to modify CPU frequency settings</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin</allow_active>
-    </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/bash</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/loq-power-apply</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 </policyconfig>

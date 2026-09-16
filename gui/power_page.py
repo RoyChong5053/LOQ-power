@@ -13,14 +13,14 @@ import profiles as prof
 EC_DESCRIPTIONS = {
     "gpu_nv_ctgp": "可配置总图形功率，影响 GPU 最大功耗上限。提高可增加 GPU 性能，降低可减少发热",
     "gpu_nv_ppab": "功率加速，在 GPU 高负载时临时额外分配的功率。数值越大，短时性能爆发越强",
-    "gpu_nv_ac_offset": "电源适配器接入时的功率偏移。接电源时可分配更多功率给 GPU",
+    "gpu_nv_ac_offset": "电源适配器接入时的功率偏移(仅插电有效，电池模式忽略)。接电源时可分配更多功率给 GPU",
     "gpu_nv_cpu_boost": "GPU 活跃时动态分配给 CPU 的额外功率。游戏时提升 CPU 性能",
     "gpu_temp": "GPU 温度墙，达到此温度后 GPU 开始降频。降低可保护 GPU 但影响持续性能",
     "ppt_pl1_spl": "CPU 持续功率限制，长时间负载的最大功耗。降低可减少发热和风扇噪音",
     "ppt_pl2_sppt": "CPU 短时功率限制，Turbo Boost 时的最大功耗。允许短时间更高性能",
     "ppt_pl3_fppt": "CPU 快速功率跟踪，最短时间内的峰值功率。影响单线程突发性能",
     "ppt_cpu_cl": "GPU 活跃时的 CPU 功率限制。游戏时控制 CPU 功耗分配",
-    "cpu_temp": "CPU 温度墙，达到此温度后 CPU 开始降频。降低可减少发热但影响持续性能",
+    "cpu_temp": "CPU 温度墙(STT目标，非硬断电墙，需配合PL1/PL2/频率一起降才压得住)。降低可减少发热但影响持续性能",
 }
 
 
@@ -113,7 +113,7 @@ class PowerPage(Gtk.Box):
         gpu_attrs = [
             ("gpu_nv_ctgp", "GPU cTGP", "W", "可配置总图形功率，影响 GPU 最大功耗上限"),
             ("gpu_nv_ppab", "GPU PPAB", "W", "功率加速，GPU 高负载时临时额外功率"),
-            ("gpu_nv_ac_offset", "GPU AC Offset", "W", "电源适配器接入时的功率偏移"),
+            ("gpu_nv_ac_offset", "GPU AC Offset", "W", "电源适配器接入时的功率偏移(仅插电有效)"),
             ("gpu_nv_cpu_boost", "GPU→CPU Boost", "W", "GPU 活跃时动态分配给 CPU 的额外功率"),
             ("gpu_temp", "GPU 温度限制", "°C", "GPU 降频温度墙，达到后开始降频"),
         ]
@@ -234,9 +234,16 @@ class PowerPage(Gtk.Box):
         pp_frame.append(pp_desc)
 
         self.pp_combo = Gtk.ComboBoxText()
-        for choice in ("low-power", "balanced", "performance", "max-power"):
+        for choice in ("low-power", "balanced", "performance", "max-power", "custom"):
             self.pp_combo.append_text(choice)
         self.pp_combo.set_active(1)
+        pp_hint = Gtk.Label(
+            label="custom=独立模式(均衡风扇基底+EC可写)；选其他模式会写完EC再切回，EC值保留",
+            xalign=0, wrap=True
+        )
+        pp_hint.add_css_class("caption")
+        pp_hint.add_css_class("dim-label")
+        pp_frame.append(pp_hint)
         pp_frame.append(self.pp_combo)
 
         # Bottom padding
@@ -275,12 +282,16 @@ class PowerPage(Gtk.Box):
         """Refresh only the dashboard status cards (fast, no sliders)."""
         d = ec_backend.read_dashboard()
 
-        # Thermal banner
+        # Thermal banner: custom is an independent mode with balanced fan basis
         mode = d["mode"]
         custom_active = (mode == "custom")
-        # Determine the Fn+Q mode (what LED shows)
-        fnq_mode = mode if mode in ("low-power", "balanced", "performance", "max-power") else "balanced"
-        self.thermal_banner.set_mode(fnq_mode, custom_active)
+        fan_basis = d.get("fan_basis") or "balanced"
+        if custom_active:
+            # Banner shows fan basis (balanced), not "custom" LED confusion
+            self.thermal_banner.set_mode(fan_basis, custom_active=True, fan_basis=fan_basis)
+        else:
+            fnq_mode = mode if mode in ("low-power", "balanced", "performance", "max-power") else "balanced"
+            self.thermal_banner.set_mode(fnq_mode, custom_active=False, fan_basis=fnq_mode)
 
         # GPU card
         gpu = d["gpu"]
@@ -359,11 +370,13 @@ class PowerPage(Gtk.Box):
         # Refresh dashboard
         self._refresh_dashboard()
 
-        # Read EC for sliders
+        # Read EC for sliders (ranges come from firmware metadata, not hardcoded)
         self.ec_data = ec_backend.read_all_ec()
         for attr_name, data in self.ec_data.items():
             if attr_name in self.cards:
-                self.cards[attr_name].set_value(data["value"])
+                card = self.cards[attr_name]
+                card.set_range(data.get("min"), data.get("max"), data.get("default"))
+                card.set_value(data["value"])
 
         # Read CPU for sliders
         self.cpu_data = ec_backend.read_cpu_freq()
@@ -385,11 +398,15 @@ class PowerPage(Gtk.Box):
 
         pp = ec_backend.read_platform_profile()
         if pp:
-            pp_choices = ec_backend.read_platform_profile_choices()
-            for i, c in enumerate(pp_choices):
-                if c == pp:
-                    self.pp_combo.set_active(i)
+            # Combo now includes custom as 5th entry; fall back to text search
+            found = False
+            for i in range(5):
+                self.pp_combo.set_active(i)
+                if self.pp_combo.get_active_text() == pp:
+                    found = True
                     break
+            if not found:
+                self.pp_combo.set_active(1)
 
         self._loading = False
 
@@ -446,10 +463,9 @@ class PowerPage(Gtk.Box):
         self.epp_combo.set_active(epp_map.get(epp, 0))
 
         pp = settings.get("platform_profile", "balanced")
-        pp_choices = ec_backend.read_platform_profile_choices()
-        for i, c in enumerate(pp_choices):
-            if c == pp:
-                self.pp_combo.set_active(i)
+        for i in range(5):
+            self.pp_combo.set_active(i)
+            if self.pp_combo.get_active_text() == pp:
                 break
 
         self._loading = False

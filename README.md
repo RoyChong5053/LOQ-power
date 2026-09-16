@@ -84,7 +84,7 @@ python3 main.py
 |------|------|------|
 | GPU cTGP | 55-105W | 可配置总图形功率 |
 | GPU PPAB | 10-25W | 功率加速 |
-| GPU AC Offset | 10-55W | 电源适配器功率偏移 |
+| GPU AC Offset | 10-55W | 电源适配器功率偏移 (仅插电有效，电池模式忽略) |
 | GPU→CPU Boost | 5-15W | 动态加速 |
 | GPU 温度限制 | 75-87°C | GPU 降频温度墙 |
 | CPU PL1 | 40-75W | 持续功率 (长时) |
@@ -113,7 +113,8 @@ python3 main.py
 
 ### 方案管理
 
-- 内置方案: 省电、平衡、性能
+- 内置方案: 省电、平衡、性能、自定义 (Custom独立模式)
+- Custom 是独立模式：均衡风扇基底 + EC 可写 (performance/max-power 在 Linux 下风扇直接拉满，不适合做基底)
 - 自定义方案: 保存/加载/切换
 - 方案存储: `~/.config/loq-power/profiles.json`
 
