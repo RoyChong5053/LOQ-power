@@ -1,10 +1,34 @@
+# Rust
+target/
+**/target/
+*.rs.bk
+
+# Tauri / Svelte / Node
+node_modules/
+**/node_modules/
+ui/dist/
+**/dist/
+.svelte-kit/
+**/.svelte-kit/
+.vite/
+**/.vite/
+
+# Python (legacy)
 .venv/
 __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
-dist/
-build/
+
+# Packaging
+*.deb
+*.rpm
+*.AppImage
+*.tar.gz
+
+# Editors / misc
 *.swp
 *.swo
 *~
+.DS_Store
+*.log
