@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/loq-core",
     "crates/loq-cli",
+    "crates/loq-gui",
 ]
 
 [workspace.package]

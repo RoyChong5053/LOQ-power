@@ -1,0 +1,21 @@
+[package]
+name = "loq-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Tauri desktop UI for LOQ Power"
+
+[lib]
+name = "loq_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+loq-core = { path = "../loq-core" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }

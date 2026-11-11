@@ -5,6 +5,7 @@ target/
 
 # Tauri / Svelte / Node
 node_modules/
+crates/*/gen/
 **/node_modules/
 ui/dist/
 **/dist/
