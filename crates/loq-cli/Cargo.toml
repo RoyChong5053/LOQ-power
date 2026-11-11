@@ -1,0 +1,18 @@
+[package]
+name = "loq-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Command line interface for LOQ Power"
+
+[[bin]]
+name = "loq-power"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+loq-core = { path = "../loq-core" }
+serde_json.workspace = true
