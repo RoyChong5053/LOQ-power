@@ -3,7 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { Capabilities, FanCurve } from "./lib/types";
 
-  type Tab = "dashboard" | "power" | "fan" | "system" | "ec";
+  type Tab = "dashboard" | "power" | "fan" | "saving" | "system" | "ec";
 
   interface DaemonState {
     active_profile: string;
@@ -11,6 +11,27 @@
     thermal_mode: string;
     ppd_profile: string;
     holds: number;
+  }
+
+  interface PowerSavingState {
+    wifi_interface: string | null;
+    wifi_power_save: boolean | null;
+    usb_autosuspend_devices: number;
+    usb_autosuspend_enabled: number;
+    pcie_aspm: string | null;
+    pcie_aspm_choices: string[];
+    nmi_watchdog: boolean | null;
+    nvme_runtime_pm: string[];
+    audio_power_save: boolean | null;
+  }
+
+  interface SavingDraft {
+    wifi: boolean;
+    usb: boolean;
+    aspm: string;
+    nmi: boolean;
+    nvme: string;
+    audio: boolean;
   }
 
   interface ProfileState {
@@ -64,6 +85,8 @@
   let takeoverStatus = $state<TakeoverStatus | null>(null);
   let wizardBusy = $state(false);
   let profiles = $state<ProfileState | null>(null);
+  let powerSaving = $state<PowerSavingState | null>(null);
+  let savingDraft = $state<SavingDraft | null>(null);
   let curveDraft = $state<FanCurve | null>(null);
   let cpuDraft = $state<
     { governor: string; epp: string; maxMhz: number; boost: boolean } | null
@@ -146,6 +169,61 @@
     }
   }
 
+  function draftFromSaving(state: PowerSavingState): SavingDraft {
+    return {
+      wifi: state.wifi_power_save === true,
+      usb: state.usb_autosuspend_devices > 0 && state.usb_autosuspend_enabled > 0,
+      aspm: state.pcie_aspm ?? state.pcie_aspm_choices[0] ?? "default",
+      nmi: state.nmi_watchdog !== false,
+      nvme: state.nvme_runtime_pm[0] ?? "on",
+      audio: state.audio_power_save === true,
+    };
+  }
+
+  async function loadPowerSaving() {
+    try {
+      powerSaving = await invoke<PowerSavingState>("get_power_saving");
+      savingDraft = draftFromSaving(powerSaving);
+    } catch {
+      powerSaving = null;
+      savingDraft = null;
+    }
+  }
+
+  async function applyPowerSaving(dryRun: boolean) {
+    if (!savingDraft) return;
+    busy = true;
+    notice = "";
+    try {
+      const response = await invoke<ApplyResponse>("set_power_saving", {
+        settings: {
+          wifi_power_save: savingDraft.wifi,
+          usb_autosuspend: savingDraft.usb,
+          pcie_aspm: savingDraft.aspm,
+          nmi_watchdog: savingDraft.nmi,
+          nvme_runtime_pm: savingDraft.nvme,
+          audio_power_save: savingDraft.audio,
+        },
+        dryRun,
+      });
+      if (response.ok) {
+        noticeKind = "ok";
+        notice = dryRun
+          ? `预览完成：${response.writes.length} 项，跳过 ${response.skipped.length} 项。`
+          : `已应用 ${response.writes.length} 项省电设置。`;
+        if (!dryRun) await loadPowerSaving();
+      } else {
+        noticeKind = "error";
+        notice = `失败：${response.errors.join("；")}`;
+      }
+    } catch (reason) {
+      noticeKind = "error";
+      notice = String(reason);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function loadTakeover() {
     try {
       takeoverStatus = await invoke<TakeoverStatus>("get_takeover_status");
@@ -158,6 +236,7 @@
     await refresh();
     await loadDaemon();
     await loadProfiles();
+    await loadPowerSaving();
     await loadTakeover();
   });
 
@@ -495,6 +574,9 @@
       <button class:active={tab === "fan"} onclick={() => (tab = "fan")}>
         <span class="dot"></span>风扇 / 电池
       </button>
+      <button class:active={tab === "saving"} onclick={() => { tab = "saving"; loadPowerSaving(); }}>
+        <span class="dot"></span>省电
+      </button>
       <button class:active={tab === "system"} onclick={() => (tab = "system")}>
         <span class="dot"></span>系统
       </button>
@@ -506,7 +588,7 @@
       <div class="daemon-state" class:online={daemon}>
         {daemonLabel()}
       </div>
-      <div>Phase 4 · 可读写</div>
+      <div>v0.1.0 · Rust + Tauri</div>
     </div>
   </aside>
 
@@ -520,7 +602,7 @@
         </p>
       </div>
       <div class="actions">
-        <button class="ghost" onclick={() => { refresh(); loadDaemon(); loadProfiles(); loadTakeover(); }} disabled={loading || busy}>
+        <button class="ghost" onclick={() => { refresh(); loadDaemon(); loadProfiles(); loadPowerSaving(); loadTakeover(); }} disabled={loading || busy}>
           {loading ? "读取中…" : "刷新"}
         </button>
       </div>
@@ -970,6 +1052,83 @@
             未检测到 LenovoLegionLinux。安装树外模块后可在这里编辑风扇曲线；本工具不会自动加载它。
           </section>
         {/if}
+      {:else if tab === "saving"}
+        <section class="panel">
+          <div class="panel-head">
+            <h2>省电开关</h2>
+            <span class="hint">吸收自 TLP，直接写入内核接口</span>
+          </div>
+          {#if savingDraft && powerSaving}
+            <div class="saving-form">
+              <label class="toggle">
+                <input type="checkbox" bind:checked={savingDraft.wifi} disabled={busy || !powerSaving.wifi_interface} />
+                WiFi 省电
+                <em class="hint">{powerSaving.wifi_interface ?? "未检测到无线网卡"}</em>
+              </label>
+
+              <label class="toggle">
+                <input type="checkbox" bind:checked={savingDraft.usb} disabled={busy || powerSaving.usb_autosuspend_devices === 0} />
+                USB 自动挂起
+                <em class="hint">
+                  {powerSaving.usb_autosuspend_devices} 个设备，已启用 {powerSaving.usb_autosuspend_enabled} 个（跳过音频与打印机）
+                </em>
+              </label>
+
+              <label class="field">
+                <span>PCIe ASPM</span>
+                <select bind:value={savingDraft.aspm} disabled={busy || powerSaving.pcie_aspm_choices.length === 0}>
+                  {#each powerSaving.pcie_aspm_choices as choice}
+                    <option value={choice}>{choice}</option>
+                  {/each}
+                </select>
+                <em class="hint">当前 {powerSaving.pcie_aspm ?? "未知"} · 修改可能影响稳定性</em>
+              </label>
+
+              <label class="toggle">
+                <input type="checkbox" bind:checked={savingDraft.nmi} disabled={busy} />
+                NMI watchdog
+                <em class="hint">关闭可减少空闲唤醒</em>
+              </label>
+
+              <label class="field">
+                <span>NVMe 运行时电源管理</span>
+                <select bind:value={savingDraft.nvme} disabled={busy || powerSaving.nvme_runtime_pm.length === 0}>
+                  {#each powerSaving.nvme_runtime_pm as value}
+                    <option value={value}>{value}</option>
+                  {/each}
+                </select>
+                <em class="hint">当前 {powerSaving.nvme_runtime_pm.join(", ") || "无 NVMe"}</em>
+              </label>
+
+              <label class="toggle">
+                <input type="checkbox" bind:checked={savingDraft.audio} disabled={busy || powerSaving.audio_power_save === null} />
+                HDA 音频省电
+                <em class="hint">可能引入爆音，默认关闭</em>
+              </label>
+            </div>
+            <div class="panel-actions">
+              <button class="ghost" onclick={() => powerSaving && (savingDraft = draftFromSaving(powerSaving))} disabled={busy}>
+                还原
+              </button>
+              <button class="ghost" onclick={() => applyPowerSaving(true)} disabled={busy}>预览</button>
+              <button class="primary" onclick={() => applyPowerSaving(false)} disabled={busy}>
+                {busy ? "应用中…" : "应用省电设置"}
+              </button>
+            </div>
+          {:else}
+            <p class="hint">loq-powerd 未运行，无法读取或修改省电设置。</p>
+          {/if}
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>说明</h2>
+          </div>
+          <p class="hint saving-note">
+            这些开关对应 TLP 中在本机生效的设置。应用配置档时，配置档的
+            <code>power_saving</code> 段也会覆盖这里。接管 TLP 后由 loq-powerd 统一管理。
+          </p>
+        </section>
       {:else if tab === "system"}
         <section class="grid">
           <article class="card">

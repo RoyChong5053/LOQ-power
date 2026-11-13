@@ -25,7 +25,7 @@ LOQ Power 由一个特权守护进程、一个非特权 CLI/GUI 和一小组打�
 | `loq-helper` | root 权限助手，stdin 接收 `ApplyRequest`，也支持 `--takeover` / `--restore-tlp` |
 | `loq-powerd` | 系统守护进程：D-Bus 接口、polkit 鉴权、AC/BAT 自动切换、唤醒后重放、PPD 兼容 |
 | `loq-gui` | Tauri 2 外壳，前端在 `ui/`（Svelte 5 + Vite + TypeScript） |
-| `ui/` | 仪表盘、功率、风扇/电池、系统、EC 浏览器、TLP 接管向导 |
+| `ui/` | 仪表盘、功率、风扇/电池、省电、系统、EC 浏览器、TLP 接管向导 |
 
 ## 写入安全模型
 

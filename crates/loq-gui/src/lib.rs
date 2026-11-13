@@ -95,6 +95,22 @@ async fn apply_request(request_json: String) -> Result<serde_json::Value, String
     serde_json::from_str(&raw).map_err(|error| format!("守护进程返回了无效 JSON: {error}"))
 }
 
+/// Live power-saving state (WiFi, USB, PCIe ASPM, NVMe, audio, NMI).
+#[tauri::command]
+async fn get_power_saving() -> Result<serde_json::Value, String> {
+    call_json("GetPowerSaving", &()).await
+}
+
+/// Write power-saving settings directly.
+#[tauri::command]
+async fn set_power_saving(
+    settings: serde_json::Value,
+    dry_run: bool,
+) -> Result<serde_json::Value, String> {
+    let json = serde_json::to_string(&settings).map_err(|error| error.to_string())?;
+    call_json("SetPowerSaving", &(json, dry_run)).await
+}
+
 /// Profile names and the AC/battery mapping.
 #[tauri::command]
 async fn get_profiles() -> Result<serde_json::Value, String> {
@@ -157,6 +173,8 @@ pub fn run() {
             apply_request,
             get_profiles,
             apply_profile,
+            get_power_saving,
+            set_power_saving,
             get_takeover_status,
             takeover,
             restore_tlp

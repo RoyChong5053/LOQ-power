@@ -15,6 +15,8 @@ Lenovo LOQ 15ARP9（83JC）的 Linux 电源与 EC 控制工具。Rust 实现，�
 - **风扇**：EC 风扇模式（静音 / 标准 / 除尘 / 全速）、转速与温度传感器
 - **CPU**：governor、EPP、频率上下限、boost
 - **LED**：键盘背光
+- **省电**：WiFi 省电、USB autosuspend、PCIe ASPM、NVMe runtime PM、HDA 省电、
+  NMI watchdog；可在 GUI「省电」页单独调整，也会随配置档应用
 - **配置档**：内置省电/平衡/性能/自定义，可自定义 TOML
 - **自动切换**：AC/电池变化、开机、挂起唤醒后重新应用配置档
 - **吸收 TLP**：CPU 调频、PCIe ASPM、WiFi 省电、USB autosuspend、NVMe PM、

@@ -350,6 +350,43 @@ impl PowerIface {
         Ok(to_json(&response))
     }
 
+    /// Live state of the power-saving knobs absorbed from TLP.
+    fn get_power_saving(&self) -> String {
+        let state = self.state.read().expect("state lock poisoned");
+        to_json(&loq_core::powersave::detect(&state.fs))
+    }
+
+    /// Write the power-saving knobs directly, without switching profile.
+    async fn set_power_saving(
+        &self,
+        settings_json: String,
+        dry_run: bool,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] header: Header<'_>,
+    ) -> fdo::Result<String> {
+        let settings: loq_core::profile::PowerSaving = serde_json::from_str(&settings_json)
+            .map_err(|error| fdo::Error::InvalidArgs(error.to_string()))?;
+
+        if !dry_run {
+            authorize(conn, Some(&header), "org.loq.power.apply").await?;
+        }
+
+        let report = {
+            let state = self.state.read().expect("state lock poisoned");
+            loq_core::powersave::apply(&state.fs, &settings, dry_run)
+        };
+
+        Ok(serde_json::json!({
+            "ok": report.ok(),
+            "dry_run": dry_run,
+            "writes": report.writes,
+            "skipped": report.skipped,
+            "errors": report.errors,
+            "warnings": [],
+        })
+        .to_string())
+    }
+
     /// Profile names and the AC/battery mapping.
     fn get_profiles(&self) -> String {
         let state = self.state.read().expect("state lock poisoned");

@@ -651,3 +651,22 @@ tbody tr:last-child td {
   font-style: normal;
   font-weight: 400;
 }
+
+/* Power-saving toggle form */
+.saving-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.saving-form .toggle em {
+  margin-left: auto;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.saving-note {
+  padding: 0 18px 16px;
+  line-height: 1.7;
+}
