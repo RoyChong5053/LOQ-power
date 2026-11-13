@@ -13,6 +13,24 @@
     holds: number;
   }
 
+  interface TakeoverStatus {
+    taken_over: boolean;
+    rollback_available: boolean;
+    tlp: {
+      installed: boolean;
+      service_active: boolean | null;
+      pd_active: boolean | null;
+      config_files: string[];
+    };
+  }
+
+  interface TakeoverReport {
+    dry_run: boolean;
+    steps: { action: string; ok: boolean; detail: string }[];
+    notes: string[];
+    errors: string[];
+  }
+
   interface ApplyResponse {
     ok: boolean;
     dry_run: boolean;
@@ -35,6 +53,8 @@
   let ecDraft = $state<Record<string, number>>({});
   let platformTarget = $state("");
   let dirty = $state(false);
+  let takeoverStatus = $state<TakeoverStatus | null>(null);
+  let wizardBusy = $state(false);
 
   async function refresh(silent = false) {
     if (!silent) loading = true;
@@ -70,9 +90,18 @@
     }
   }
 
+  async function loadTakeover() {
+    try {
+      takeoverStatus = await invoke<TakeoverStatus>("get_takeover_status");
+    } catch {
+      takeoverStatus = null;
+    }
+  }
+
   onMount(async () => {
     await refresh();
     await loadDaemon();
+    await loadTakeover();
   });
 
   $effect(() => {
@@ -218,6 +247,60 @@
       return;
     }
     await send(request);
+  }
+
+  function formatTakeover(report: TakeoverReport, verb: string): void {
+    const failed = report.errors.length > 0;
+    noticeKind = failed ? "error" : "ok";
+    const steps = report.steps.map((step) => `${step.ok ? "✓" : "×"} ${step.action}`).join("；");
+    notice = failed
+      ? `${verb}失败：${report.errors.join("；")}`
+      : `${verb}完成：${steps}`;
+    if (report.notes.length > 0) {
+      notice += `（${report.notes.join("；")}）`;
+    }
+  }
+
+  async function startTakeover() {
+    if (
+      !confirm(
+        "接管将停止并禁用 TLP（tlp.service / tlp-pd.service），导入 TLP 配置并启动 loq-powerd。\n\n继续吗？",
+      )
+    ) {
+      return;
+    }
+    wizardBusy = true;
+    notice = "";
+    try {
+      const report = await invoke<TakeoverReport>("takeover", { import: true, force: false });
+      formatTakeover(report, "TLP 接管");
+      await refresh();
+      await loadDaemon();
+      await loadTakeover();
+    } catch (reason) {
+      noticeKind = "error";
+      notice = String(reason);
+    } finally {
+      wizardBusy = false;
+    }
+  }
+
+  async function restoreTlp() {
+    if (!confirm("将禁用 loq-powerd 并恢复接管前的 TLP 状态。\n\n继续吗？")) return;
+    wizardBusy = true;
+    notice = "";
+    try {
+      const report = await invoke<TakeoverReport>("restore_tlp");
+      formatTakeover(report, "TLP 还原");
+      await refresh();
+      await loadDaemon();
+      await loadTakeover();
+    } catch (reason) {
+      noticeKind = "error";
+      notice = String(reason);
+    } finally {
+      wizardBusy = false;
+    }
   }
 
   async function send(request: Record<string, unknown>) {
@@ -557,6 +640,46 @@
             <strong>{tlpLabel()}</strong>
             <span class="hint">tlp-pd {capabilities.tlp.pd_active ? "运行" : "停止"}</span>
           </article>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>TLP 接管向导</h2>
+            <span class="hint">
+              {takeoverStatus?.taken_over
+                ? "已由 LOQ Power 接管"
+                : takeoverStatus?.rollback_available
+                  ? "存在可用的回滚记录"
+                  : "当前由 TLP 管理"}
+            </span>
+          </div>
+          <div class="wizard">
+            <ol class="wizard-steps">
+              <li class:done={takeoverStatus?.rollback_available}>
+                <strong>1. 保存回滚记录</strong>
+                <span>写入 /etc/loq-power/takeover.json，记录 TLP 单元状态与配置备份</span>
+              </li>
+              <li class:done={takeoverStatus?.taken_over}>
+                <strong>2. 导入 TLP 配置</strong>
+                <span>把 CPU 调频、PCIe ASPM、WiFi 省电等映射为 LOQ Power 配置档</span>
+              </li>
+              <li class:done={takeoverStatus?.taken_over}>
+                <strong>3. 交接服务</strong>
+                <span>停止并禁用 tlp / tlp-pd，启用并启动 loq-powerd</span>
+              </li>
+            </ol>
+            <div class="wizard-actions">
+              <button class="ghost" onclick={restoreTlp} disabled={wizardBusy || !takeoverStatus?.rollback_available}>
+                还原 TLP
+              </button>
+              <button class="primary" onclick={startTakeover} disabled={wizardBusy || takeoverStatus?.taken_over}>
+                {wizardBusy ? "处理中…" : "开始接管"}
+              </button>
+            </div>
+            <p class="hint">
+              接管需要 loq-powerd 正在运行，并由 polkit 授权。TLP 配置不会被删除，随时可还原。
+            </p>
+          </div>
         </section>
 
         <section class="panel">

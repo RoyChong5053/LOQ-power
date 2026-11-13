@@ -95,6 +95,46 @@ async fn apply_request(request_json: String) -> Result<serde_json::Value, String
     serde_json::from_str(&raw).map_err(|error| format!("守护进程返回了无效 JSON: {error}"))
 }
 
+/// TLP hand-over status (includes the rollback record check).
+#[tauri::command]
+async fn get_takeover_status() -> Result<serde_json::Value, String> {
+    call_json("GetTakeoverStatus", &()).await
+}
+
+/// Disable TLP and start LOQ Power. Polkit prompts for the takeover action.
+#[tauri::command]
+async fn takeover(import: bool, force: bool) -> Result<serde_json::Value, String> {
+    call_json("Takeover", &(import, force)).await
+}
+
+/// Give power management back to TLP; the daemon stops itself afterwards.
+#[tauri::command]
+async fn restore_tlp() -> Result<serde_json::Value, String> {
+    call_json("RestoreTlp", &()).await
+}
+
+async fn call_json<R>(method: &str, body: &R) -> Result<serde_json::Value, String>
+where
+    R: serde::ser::Serialize + zbus::zvariant::DynamicType,
+{
+    let connection = daemon_connection().await?;
+    if !name_has_owner(&connection, SERVICE).await? {
+        return Err("loq-powerd 未运行，请先启动守护进程".to_string());
+    }
+
+    let reply = connection
+        .call_method(Some(SERVICE), PATH, Some(INTERFACE), method, body)
+        .await
+        .map_err(|error| format!("{method} 失败: {error}"))?;
+
+    let raw: String = reply
+        .body()
+        .deserialize()
+        .map_err(|error| format!("无法解析守护进程回复: {error}"))?;
+
+    serde_json::from_str(&raw).map_err(|error| format!("守护进程返回了无效 JSON: {error}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -102,7 +142,10 @@ pub fn run() {
             get_capabilities,
             get_version,
             get_daemon_state,
-            apply_request
+            apply_request,
+            get_takeover_status,
+            takeover,
+            restore_tlp
         ])
         .run(tauri::generate_context!())
         .expect("failed to start LOQ Power");

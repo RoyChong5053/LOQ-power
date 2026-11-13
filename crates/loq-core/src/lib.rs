@@ -9,12 +9,15 @@ pub mod ideapad;
 pub mod leds;
 pub mod legion;
 pub mod platform;
+pub mod powersave;
 pub mod probe;
 pub mod profile;
 pub mod request;
 pub mod services;
 pub mod sysfs;
+pub mod takeover;
 pub mod tlp;
+pub mod tlp_import;
 pub mod write;
 
 pub use error::{Error, Result};

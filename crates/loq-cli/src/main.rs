@@ -9,7 +9,9 @@ use loq_core::profile::{self, Profile, ProfileFile};
 use loq_core::request::{
     ApplyRequest, ApplyResponse, BatteryRequest, CpuRequest, IdeapadRequest, LedRequest,
 };
-use loq_core::{Capabilities, Sysfs, battery, cpu, ec, ideapad, leds, platform, probe};
+use loq_core::{
+    Capabilities, Sysfs, battery, cpu, ec, ideapad, leds, platform, probe, takeover, tlp_import,
+};
 
 use crate::privilege::execute;
 
@@ -73,6 +75,22 @@ enum Command {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// Inspect or import the TLP configuration
+    Tlp {
+        #[command(subcommand)]
+        command: TlpCommand,
+    },
+    /// Hand power management over from TLP (post-install wizard)
+    Takeover {
+        /// Keep the existing /etc/loq-power/profiles.toml
+        #[arg(long)]
+        no_import: bool,
+        /// Overwrite an earlier rollback record
+        #[arg(long)]
+        force: bool,
+    },
+    /// Give power management back to TLP
+    RestoreTlp,
     /// Apply a full JSON request (advanced / daemon use)
     Apply {
         /// Read the request from a file instead of stdin
@@ -151,6 +169,16 @@ enum LedCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum TlpCommand {
+    /// Show what the TLP configuration would turn into
+    Import {
+        /// Write the result to /etc/loq-power/profiles.toml
+        #[arg(long)]
+        write: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ProfileCommand {
     /// List available profiles
     List,
@@ -198,6 +226,11 @@ fn main() -> Result<()> {
         Command::Cpu { command } => handle_cpu(command, json, dry_run)?,
         Command::Led { command } => handle_led(command, json, dry_run)?,
         Command::Profile { command } => handle_profile(command, json, dry_run)?,
+        Command::Tlp { command } => handle_tlp(command, json, dry_run)?,
+        Command::Takeover { no_import, force } => {
+            handle_takeover(!no_import, force, json, dry_run)?
+        }
+        Command::RestoreTlp => handle_restore_tlp(json, dry_run)?,
         Command::Apply { file } => {
             let mut input = String::new();
             match file {
@@ -561,6 +594,125 @@ fn handle_profile(command: ProfileCommand, json: bool, dry_run: bool) -> Result<
         ProfileCommand::Path => println!("{}", path.display()),
     }
 
+    Ok(())
+}
+
+fn handle_tlp(command: TlpCommand, json: bool, dry_run: bool) -> Result<()> {
+    match command {
+        TlpCommand::Import { write } => {
+            let fs = Sysfs::new();
+            let imported = tlp_import::import(&fs);
+            if json {
+                print_json(&imported)?;
+            } else {
+                println!(
+                    "{} TLP profiles: {}",
+                    imported.profiles.profile.len(),
+                    imported
+                        .profiles
+                        .profile
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                for note in &imported.notes {
+                    println!("  note: {note}");
+                }
+                println!(
+                    "AC → {} | battery → {} | auto_switch {}",
+                    imported.profiles.power.ac,
+                    imported.profiles.power.battery,
+                    imported.profiles.power.auto_switch
+                );
+            }
+
+            if write {
+                if dry_run {
+                    println!("dry-run: would write {}", profile::system_path().display());
+                } else if privilege::is_root() {
+                    imported.profiles.save(&profile::system_path())?;
+                    println!("wrote {}", profile::system_path().display());
+                } else {
+                    bail!(
+                        "writing {} requires root; run with sudo",
+                        profile::system_path().display()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn takeover_report(import: bool, force: bool, dry_run: bool) -> Result<takeover::Report> {
+    if privilege::is_root() || dry_run {
+        return Ok(takeover::takeover(&Sysfs::new(), dry_run, import, force)?);
+    }
+
+    let mut args = vec!["--takeover"];
+    if !import {
+        args.push("--no-import");
+    }
+    if force {
+        args.push("--force");
+    }
+    let stdout = privilege::run_helper_mode(&args)?;
+    serde_json::from_str(&stdout).context("cannot parse helper report")
+}
+
+fn restore_report(dry_run: bool) -> Result<takeover::Report> {
+    if privilege::is_root() || dry_run {
+        return Ok(takeover::restore_tlp(dry_run)?);
+    }
+    let stdout = privilege::run_helper_mode(&["--restore-tlp"])?;
+    serde_json::from_str(&stdout).context("cannot parse helper report")
+}
+
+fn print_takeover_report(report: &takeover::Report, json: bool) -> Result<()> {
+    if json {
+        print_json(report)?;
+        return Ok(());
+    }
+
+    for step in &report.steps {
+        let mark = if step.ok { "✓" } else { "×" };
+        if step.detail.is_empty() {
+            println!("{mark} {}", step.action);
+        } else {
+            println!("{mark} {} — {}", step.action, step.detail);
+        }
+    }
+    for note in &report.notes {
+        println!("  note: {note}");
+    }
+    for error in &report.errors {
+        eprintln!("  error: {error}");
+    }
+
+    if report.dry_run {
+        println!("预览完成，未做任何更改。");
+    } else if report.ok() {
+        println!("完成。");
+    }
+    Ok(())
+}
+
+fn handle_takeover(import: bool, force: bool, json: bool, dry_run: bool) -> Result<()> {
+    let report = takeover_report(import, force, dry_run)?;
+    print_takeover_report(&report, json)?;
+    if !report.ok() {
+        bail!("takeover finished with errors");
+    }
+    Ok(())
+}
+
+fn handle_restore_tlp(json: bool, dry_run: bool) -> Result<()> {
+    let report = restore_report(dry_run)?;
+    print_takeover_report(&report, json)?;
+    if !report.ok() {
+        bail!("restore finished with errors");
+    }
     Ok(())
 }
 

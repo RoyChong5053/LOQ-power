@@ -86,6 +86,31 @@ fn try_daemon(request: &ApplyRequest) -> Option<ApplyResponse> {
     serde_json::from_str(&json).ok()
 }
 
+/// Run `loq-power-helper` with a wizard mode flag under pkexec and return its
+/// JSON stdout. Callers must not use this for the stdin request protocol.
+pub fn run_helper_mode(args: &[&str]) -> Result<String> {
+    let helper = find_helper()?;
+    let output = Command::new("pkexec")
+        .arg(&helper)
+        .args(args)
+        .output()
+        .with_context(|| format!("cannot run pkexec {}", helper.display()))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stdout.trim().is_empty() {
+        bail!(
+            "helper returned no output{}",
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr.trim())
+            }
+        );
+    }
+    Ok(stdout.trim().to_string())
+}
+
 /// Run `request` with the least privilege that can satisfy it.
 pub fn execute(request: ApplyRequest) -> Result<ApplyResponse> {
     if request.dry_run || is_root() {

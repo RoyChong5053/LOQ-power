@@ -545,3 +545,41 @@ tbody tr:last-child td {
 .notice p {
   margin: 0;
 }
+
+/* TLP takeover wizard */
+.wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 18px;
+}
+
+.wizard-steps {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.wizard-steps li {
+  color: var(--muted);
+}
+
+.wizard-steps li strong {
+  display: block;
+  color: var(--text);
+}
+
+.wizard-steps li.done strong {
+  color: var(--ok);
+}
+
+.wizard-steps li span {
+  font-size: 12px;
+}
+
+.wizard-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}

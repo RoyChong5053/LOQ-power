@@ -2,7 +2,7 @@ use std::sync::RwLock;
 
 use loq_core::profile::{ProfileFile, Resolved};
 use loq_core::request::{ApplyRequest, ApplyResponse};
-use loq_core::{Sysfs, apply, battery, platform, profile};
+use loq_core::{Sysfs, apply, battery, platform, powersave, profile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerSource {
@@ -129,21 +129,24 @@ impl State {
             Ok(resolved) => {
                 let mut request = resolved.request;
                 request.dry_run = dry_run;
-                if self
+                let mut response = apply::apply(&self.fs, &request);
+
+                // TLP-absorbed power saving runs after the EC/platform writes,
+                // so a failure here never leaves the machine in CUSTOM mode.
+                if let Some(settings) = self
                     .profiles
                     .get(name)
                     .ok()
-                    .and_then(|p| p.power_saving.as_ref())
-                    .is_some()
+                    .and_then(|profile| profile.power_saving.as_ref())
                 {
-                    // Power-saving knobs are handled by the TLP absorption layer.
-                    let mut response = apply::apply(&self.fs, &request);
-                    response
-                        .skipped
-                        .push("power_saving 设置将在 TLP 接管阶段生效".to_string());
-                    return (response, resolved.warnings);
+                    let report = powersave::apply(&self.fs, settings, dry_run);
+                    response.writes.extend(report.writes);
+                    response.skipped.extend(report.skipped);
+                    response.errors.extend(report.errors);
+                    response.ok = response.errors.is_empty();
                 }
-                (apply::apply(&self.fs, &request), resolved.warnings)
+
+                (response, resolved.warnings)
             }
             Err(error) => (ApplyResponse::error(error.to_string()), Vec::new()),
         }

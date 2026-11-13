@@ -350,6 +350,59 @@ impl PowerIface {
         Ok(to_json(&response))
     }
 
+    /// TLP hand-over status and rollback availability.
+    fn get_takeover_status(&self) -> String {
+        let status =
+            loq_core::takeover::status(&self.state.read().expect("state lock poisoned").fs);
+        to_json(&status)
+    }
+
+    /// Hand power management over from TLP (post-install wizard step).
+    async fn takeover(
+        &self,
+        import: bool,
+        force: bool,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] header: Header<'_>,
+    ) -> fdo::Result<String> {
+        authorize(conn, Some(&header), "org.loq.power.takeover").await?;
+
+        let report = tokio::task::spawn_blocking(move || {
+            loq_core::takeover::takeover(&loq_core::Sysfs::new(), false, import, force)
+        })
+        .await
+        .map_err(|error| fdo::Error::Failed(format!("takeover task failed: {error}")))?
+        .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+
+        let _ = publish(conn, &self.state).await;
+        Ok(to_json(&report))
+    }
+
+    /// Give power management back to TLP. The daemon schedules its own stop
+    /// after replying, because the rollback disables `loq-powerd.service`.
+    async fn restore_tlp(
+        &self,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(header)] header: Header<'_>,
+    ) -> fdo::Result<String> {
+        authorize(conn, Some(&header), "org.loq.power.takeover").await?;
+
+        let report =
+            tokio::task::spawn_blocking(|| loq_core::takeover::restore_tlp_keep_daemon(false))
+                .await
+                .map_err(|error| fdo::Error::Failed(format!("restore task failed: {error}")))?
+                .map_err(|error| fdo::Error::Failed(error.to_string()))?;
+
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            let _ = std::process::Command::new("systemctl")
+                .args(["stop", "loq-powerd.service"])
+                .status();
+        });
+
+        Ok(to_json(&report))
+    }
+
     /// Re-read the daemon configuration file.
     async fn reload(
         &self,

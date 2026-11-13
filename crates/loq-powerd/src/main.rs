@@ -72,6 +72,7 @@ async fn main() -> Result<()> {
     }
 
     tokio::spawn(watcher::watch(state.clone(), connection.clone()));
+    tokio::spawn(watcher::watch_resume(state.clone(), connection.clone()));
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),

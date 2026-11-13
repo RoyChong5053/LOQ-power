@@ -1,0 +1,141 @@
+# Example LOQ Power configuration.
+#
+# Copy to /etc/loq-power/profiles.toml (system, used by loq-powerd) or to
+# ~/.config/loq-power/profiles.toml (per-user, used by the CLI). Built-in
+# profiles are used whenever no file exists.
+#
+# Every value is clamped against the live hardware ranges before it is
+# written, so a profile copied from another laptop cannot break this one.
+
+[power]
+# Apply the mapped profile whenever the AC adapter is plugged or unplugged.
+auto_switch = true
+ac = "性能"
+battery = "省电"
+
+[profile.省电]
+platform = "low-power"
+battery_charge_type = "Long_Life"
+
+[profile.省电.ec]
+gpu_nv_ctgp = 55
+gpu_nv_ppab = 10
+gpu_nv_ac_offset = 10
+gpu_nv_cpu_boost = 5
+gpu_temp = 75
+ppt_pl1_spl = 40
+ppt_pl2_sppt = 45
+ppt_pl3_fppt = 55
+ppt_cpu_cl = 30
+cpu_temp = 85
+
+[profile.省电.cpu]
+governor = "powersave"
+epp = "power"
+min_khz = 411000
+max_khz = 2800000
+boost = true
+
+[profile.省电.ideapad]
+fan_mode = 0
+
+[profile.省电.power_saving]
+wifi_power_save = true
+usb_autosuspend = true
+pcie_aspm = "powersupersave"
+nmi_watchdog = true
+nvme_runtime_pm = "auto"
+audio_power_save = true
+
+[profile.平衡]
+platform = "balanced"
+battery_charge_type = "Standard"
+
+[profile.平衡.ec]
+gpu_nv_ctgp = 60
+gpu_nv_ppab = 15
+gpu_nv_ac_offset = 45
+gpu_nv_cpu_boost = 5
+gpu_temp = 85
+ppt_pl1_spl = 45
+ppt_pl2_sppt = 50
+ppt_pl3_fppt = 55
+ppt_cpu_cl = 45
+cpu_temp = 95
+
+[profile.平衡.cpu]
+governor = "performance"
+epp = "performance"
+min_khz = 1800000
+max_khz = 4000000
+boost = true
+
+[profile.平衡.ideapad]
+fan_mode = 1
+
+[profile.平衡.power_saving]
+wifi_power_save = false
+usb_autosuspend = true
+pcie_aspm = "default"
+nmi_watchdog = true
+nvme_runtime_pm = "auto"
+audio_power_save = false
+
+[profile.性能]
+platform = "performance"
+battery_charge_type = "Fast"
+
+[profile.性能.ec]
+gpu_nv_ctgp = 80
+gpu_nv_ppab = 25
+gpu_nv_ac_offset = 55
+gpu_nv_cpu_boost = 10
+gpu_temp = 87
+ppt_pl1_spl = 54
+ppt_pl2_sppt = 65
+ppt_pl3_fppt = 80
+ppt_cpu_cl = 45
+cpu_temp = 100
+
+[profile.性能.cpu]
+governor = "performance"
+epp = "performance"
+min_khz = 1800000
+max_khz = 4553000
+boost = true
+
+[profile.性能.ideapad]
+fan_mode = 4
+
+[profile.性能.power_saving]
+wifi_power_save = false
+usb_autosuspend = false
+pcie_aspm = "performance"
+nmi_watchdog = false
+nvme_runtime_pm = "on"
+audio_power_save = false
+
+# The CUSTOM profile writes EC limits directly. Using it leaves the thermal
+# mode in `custom`, which is why the built-in profiles write EC limits and then
+# restore their own thermal mode.
+[profile.自定义]
+platform = "custom"
+
+[profile.自定义.ec]
+gpu_nv_ctgp = 60
+gpu_nv_ppab = 15
+gpu_nv_ac_offset = 45
+gpu_nv_cpu_boost = 5
+gpu_temp = 85
+ppt_pl1_spl = 45
+ppt_pl2_sppt = 50
+ppt_pl3_fppt = 55
+ppt_cpu_cl = 45
+cpu_temp = 90
+
+[profile.自定义.cpu]
+governor = "performance"
+epp = "balance_power"
+min_khz = 1800000
+max_khz = 4000000
+boost = true
