@@ -1,0 +1,51 @@
+# Maintainer: RoyChong5053
+pkgname=loq-power
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="EC power limits, thermal modes and battery charging for Lenovo LOQ laptops"
+arch=('x86_64')
+url="https://github.com/RoyChong5053/LOQ-power"
+license=('MIT')
+depends=('glibc' 'gcc-libs' 'gtk3' 'webkit2gtk-4.1')
+makedepends=('cargo' 'rust' 'bun' 'pkgconf')
+source=("$pkgname::git+$url.git#branch=main")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname"
+  (cd ui && bun install --frozen-lockfile && bun run build)
+  cargo build --release --offline \
+    -p loq-cli -p loq-helper -p loq-powerd -p loq-gui
+}
+
+package() {
+  cd "$pkgname"
+
+  install -Dm755 target/release/loq-power "$pkgdir/usr/bin/loq-power"
+  install -Dm755 target/release/loq-power-helper "$pkgdir/usr/bin/loq-power-helper"
+  install -Dm755 target/release/loq-powerd "$pkgdir/usr/bin/loq-powerd"
+  install -Dm755 target/release/loq-gui "$pkgdir/usr/bin/loq-gui"
+
+  install -Dm644 packaging/systemd/loq-powerd.service \
+    "$pkgdir/usr/lib/systemd/system/loq-powerd.service"
+  install -Dm644 packaging/dbus/org.loq.Power1.conf \
+    "$pkgdir/usr/share/dbus-1/system.d/org.loq.Power1.conf"
+  install -Dm644 packaging/dbus/org.loq.Power1.service \
+    "$pkgdir/usr/share/dbus-1/system-services/org.loq.Power1.service"
+  install -Dm644 packaging/polkit/org.loq.power.policy \
+    "$pkgdir/usr/share/polkit-1/actions/org.loq.power.policy"
+  install -Dm644 packaging/desktop/org.loq.Power.desktop \
+    "$pkgdir/usr/share/applications/org.loq.Power.desktop"
+  install -Dm644 packaging/icons/hicolor/128x128/apps/org.loq.Power.png \
+    "$pkgdir/usr/share/icons/hicolor/128x128/apps/org.loq.Power.png"
+  install -Dm644 packaging/icons/hicolor/scalable/apps/org.loq.Power.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/org.loq.Power.svg"
+
+  install -Dm644 packaging/profiles.toml "$pkgdir/etc/loq-power/profiles.toml"
+
+  install -d "$pkgdir/usr/share/doc/$pkgname"
+  install -m644 README.md docs/*.md "$pkgdir/usr/share/doc/$pkgname/"
+
+  # The daemon is intentionally not enabled: taking over from TLP is an
+  # explicit post-install step (`loq-power takeover`).
+}

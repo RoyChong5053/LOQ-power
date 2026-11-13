@@ -8,9 +8,11 @@ use clap::{Parser, Subcommand};
 use loq_core::profile::{self, Profile, ProfileFile};
 use loq_core::request::{
     ApplyRequest, ApplyResponse, BatteryRequest, CpuRequest, IdeapadRequest, LedRequest,
+    LegionRequest,
 };
 use loq_core::{
-    Capabilities, Sysfs, battery, cpu, ec, ideapad, leds, platform, probe, takeover, tlp_import,
+    Capabilities, Sysfs, battery, cpu, ec, ideapad, leds, legion, platform, probe, takeover,
+    tlp_import,
 };
 
 use crate::privilege::execute;
@@ -74,6 +76,11 @@ enum Command {
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
+    },
+    /// Optional LenovoLegionLinux controls (only when legion_hwmon exists)
+    Legion {
+        #[command(subcommand)]
+        command: LegionCommand,
     },
     /// Inspect or import the TLP configuration
     Tlp {
@@ -169,6 +176,34 @@ enum LedCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum LegionCommand {
+    /// Show LLL sensors, power mode and fan curve
+    Status,
+    /// Toggle the firmware fan full-speed switch
+    Fullspeed {
+        #[arg(value_parser = clap::value_parser!(bool))]
+        enabled: bool,
+    },
+    /// Set the LLL power mode (0 balanced, 1 performance, 2 quiet)
+    Powermode { mode: i64 },
+    /// Read, save or write fan curves
+    Curve {
+        #[command(subcommand)]
+        command: CurveCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CurveCommand {
+    /// Print the current curve as TOML
+    Show,
+    /// Save the current curve to a file
+    Save { file: std::path::PathBuf },
+    /// Write a curve from a file
+    Apply { file: std::path::PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
 enum TlpCommand {
     /// Show what the TLP configuration would turn into
     Import {
@@ -226,6 +261,7 @@ fn main() -> Result<()> {
         Command::Cpu { command } => handle_cpu(command, json, dry_run)?,
         Command::Led { command } => handle_led(command, json, dry_run)?,
         Command::Profile { command } => handle_profile(command, json, dry_run)?,
+        Command::Legion { command } => handle_legion(command, json, dry_run)?,
         Command::Tlp { command } => handle_tlp(command, json, dry_run)?,
         Command::Takeover { no_import, force } => {
             handle_takeover(!no_import, force, json, dry_run)?
@@ -592,6 +628,131 @@ fn handle_profile(command: ProfileCommand, json: bool, dry_run: bool) -> Result<
             println!("deleted profile {name}");
         }
         ProfileCommand::Path => println!("{}", path.display()),
+    }
+
+    Ok(())
+}
+
+fn handle_legion(command: LegionCommand, json: bool, dry_run: bool) -> Result<()> {
+    let fs = Sysfs::new();
+
+    match command {
+        LegionCommand::Status => {
+            let info = legion::detect(&fs);
+            if json {
+                print_json(&info)?;
+            } else if !info.installed {
+                println!("未检测到 LenovoLegionLinux（legion_hwmon）。");
+            } else {
+                println!(
+                    "legion_hwmon: {}",
+                    info.hwmon_path.as_deref().unwrap_or("—")
+                );
+                println!("powermode  : {}", info.powermode.as_deref().unwrap_or("—"));
+                println!("fullspeed  : {:?}", info.fullspeed);
+                for sensor in info.fans.iter().chain(info.temperatures.iter()) {
+                    println!("  {:<18} {:.1} {}", sensor.label, sensor.value, sensor.unit);
+                }
+                if let Some(curve) = &info.fan_curve {
+                    println!("fan curve  : {} points", curve.points);
+                    for index in 0..curve.points as usize {
+                        println!(
+                            "  point {:<2} fan1={:<3} fan2={:<3} cpu={:<3} gpu={:<3} ic={:<3}",
+                            index + 1,
+                            curve.fan1_pwm[index],
+                            curve
+                                .fan2_pwm
+                                .as_ref()
+                                .map(|values| values[index].to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                            curve
+                                .cpu_temp
+                                .get(index)
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                            curve
+                                .gpu_temp
+                                .as_ref()
+                                .and_then(|values| values.get(index))
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                            curve
+                                .ic_temp
+                                .as_ref()
+                                .and_then(|values| values.get(index))
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "-".to_string()),
+                        );
+                    }
+                } else {
+                    println!("fan curve  : 本机未暴露 hwmon 风扇曲线");
+                }
+            }
+        }
+        LegionCommand::Fullspeed { enabled } => {
+            report(
+                execute(ApplyRequest {
+                    legion: Some(LegionRequest {
+                        fullspeed: Some(enabled),
+                        ..Default::default()
+                    }),
+                    dry_run,
+                    ..Default::default()
+                })?,
+                json,
+            )?;
+        }
+        LegionCommand::Powermode { mode } => {
+            report(
+                execute(ApplyRequest {
+                    legion: Some(LegionRequest {
+                        powermode: Some(mode),
+                        ..Default::default()
+                    }),
+                    dry_run,
+                    ..Default::default()
+                })?,
+                json,
+            )?;
+        }
+        LegionCommand::Curve { command } => match command {
+            CurveCommand::Show => {
+                let info = legion::detect(&fs);
+                let curve = info
+                    .fan_curve
+                    .ok_or_else(|| anyhow::anyhow!("本机未暴露 LenovoLegionLinux 风扇曲线"))?;
+                if json {
+                    print_json(&curve)?;
+                } else {
+                    println!(
+                        "{}",
+                        toml::to_string_pretty(&curve).context("cannot render curve")?
+                    );
+                }
+            }
+            CurveCommand::Save { file } => {
+                let info = legion::detect(&fs);
+                let curve = info
+                    .fan_curve
+                    .ok_or_else(|| anyhow::anyhow!("本机未暴露 LenovoLegionLinux 风扇曲线"))?;
+                legion::save_curve(&curve, &file)?;
+                println!("saved fan curve to {}", file.display());
+            }
+            CurveCommand::Apply { file } => {
+                let curve = legion::load_curve(&file)?;
+                report(
+                    execute(ApplyRequest {
+                        legion: Some(LegionRequest {
+                            fan_curve: Some(curve),
+                            ..Default::default()
+                        }),
+                        dry_run,
+                        ..Default::default()
+                    })?,
+                    json,
+                )?;
+            }
+        },
     }
 
     Ok(())

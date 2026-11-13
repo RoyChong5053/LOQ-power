@@ -57,6 +57,25 @@ impl IdeapadRequest {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LegionRequest {
+    /// Firmware fan full-speed switch (requires LenovoLegionLinux).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fullspeed: Option<bool>,
+    /// LLL power mode: 0 balanced, 1 performance, 2 quiet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub powermode: Option<i64>,
+    /// Complete fan curve; only valid when `legion_hwmon` is present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fan_curve: Option<crate::legion::FanCurve>,
+}
+
+impl LegionRequest {
+    pub fn is_empty(&self) -> bool {
+        self.fullspeed.is_none() && self.powermode.is_none() && self.fan_curve.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LedRequest {
     pub name: String,
     pub brightness: i64,
@@ -79,6 +98,10 @@ pub struct ApplyRequest {
     pub ideapad: Option<IdeapadRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub led: Option<LedRequest>,
+    /// Optional LenovoLegionLinux controls; ignored (with an error) when the
+    /// out-of-tree module is not loaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legion: Option<LegionRequest>,
     #[serde(default)]
     pub dry_run: bool,
 }
@@ -91,6 +114,7 @@ impl ApplyRequest {
             && self.battery.is_none()
             && self.ideapad.as_ref().is_none_or(IdeapadRequest::is_empty)
             && self.led.is_none()
+            && self.legion.as_ref().is_none_or(LegionRequest::is_empty)
     }
 }
 

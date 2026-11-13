@@ -21,7 +21,7 @@ Lenovo LOQ 15ARP9（83JC）的 Linux 电源与 EC 控制工具。Rust 实现，�
   HDA 省电、NMI watchdog；提供一键接管与回滚
 - **桌面兼容**：实现 `net.hadess.PowerProfiles`，停用 `tlp-pd` 后 GNOME/KDE
   电源模式仍然可用
-- **可选 LLL**：检测到 `legion_hwmon` 时显示风扇曲线与相关传感器
+- **可选 LLL**：检测到 `legion_hwmon` 时显示风扇曲线编辑、全速开关与 powermode
 
 ## 目录
 
@@ -91,6 +91,11 @@ loq-power fan mode set 1
 loq-power charge set Long_Life
 loq-power cpu set --governor powersave --epp power
 loq-power led set platform::kbd_backlight 1
+
+# 仅在安装了 LenovoLegionLinux 时可用
+loq-power legion status
+loq-power legion curve show
+loq-power legion curve apply curve.toml
 ```
 
 `--json` 对所有子命令可用；`--dry-run` 只预览，不需要 root。

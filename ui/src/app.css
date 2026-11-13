@@ -583,3 +583,34 @@ tbody tr:last-child td {
   justify-content: flex-end;
   gap: 10px;
 }
+
+/* LenovoLegionLinux fan curve editor */
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--panel-alt);
+  font-weight: 600;
+}
+
+.cell-input {
+  width: 72px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.cell-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.curve-note {
+  padding: 0 18px 16px;
+}

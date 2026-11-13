@@ -68,9 +68,39 @@ Laptop）上实际可用的接口，数值来自 `loq-power probe --json`。
 
 ### LenovoLegionLinux（可选）
 
-若安装了树外 `legion_hwmon` 模块，`legacy/` 与 GUI 会显示风扇曲线、全速开关和
-powermode。LOQ Power 不会自动加载该模块，因为它与内核自带的
-`lenovo_wmi_gamezone` 可能冲突。检测不到时相关界面隐藏。
+LOQ Power 不会加载树外模块；只有当 `legion_hwmon` 已经存在时才启用下列功能：
+
+| 功能 | 接口 |
+|---|---|
+| 风扇/温度传感器 | `/sys/class/hwmon/*/fan*_input`、`temp*_input` |
+| 风扇曲线 | `/sys/class/hwmon/*/pwm{1,2}_auto_point{N}_pwm`、`pwm{1,2,3}_auto_point{N}_temp` |
+| 风扇全速 | `/sys/module/legion_laptop/drivers/*/*/fan_fullspeed` |
+| LLL 电源模式 | `/sys/module/legion_laptop/drivers/*/*/powermode`（0 均衡 / 1 性能 / 2 安静） |
+| 调试转储（只读） | `/sys/kernel/debug/legion/fancurve` |
+
+风扇曲线走标准 hwmon 接口，不直接写 debugfs 或 EC 寄存器：
+
+- `pwm1_auto_pointN_pwm` / `pwm2_auto_pointN_pwm`：第 N 点风扇 1/2 的 PWM（0–255）
+- `pwm1_auto_pointN_temp`：第 N 点的 CPU 温度阈值
+- `pwm2_auto_pointN_temp`：第 N 点的 GPU 温度阈值
+- `pwm3_auto_pointN_temp`：第 N 点的 IC 温度阈值
+
+写入前会校验点数与硬件一致、PWM ≤ 255、温度 ≤ 127，且每个序列随点号单调不减。
+温度先写、转速后写，避免风扇在阈值就位前先加速。部分固件把 PWM 量化到 0–10 档，
+回读时按最近档位接受（例如写入 70 读回 77）。
+
+```bash
+loq-power legion status
+loq-power legion curve show            # TOML
+loq-power legion curve save curve.toml
+loq-power legion curve apply curve.toml
+loq-power legion fullspeed true
+loq-power legion powermode 1
+```
+
+GUI 的「风扇 / 电池」页在检测到 LLL 时显示曲线编辑表格、全速开关和电源模式。
+切换 LLL 电源模式、重启或挂起后固件可能恢复默认曲线，需要重新写入。LLL 与内核
+自带的 `lenovo_wmi_gamezone` 可能冲突，因此默认不安装、不加载。
 
 ## 电池
 

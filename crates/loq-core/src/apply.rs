@@ -14,6 +14,7 @@ use crate::ec;
 use crate::error::Result;
 use crate::ideapad;
 use crate::leds;
+use crate::legion;
 use crate::platform;
 use crate::request::{ApplyRequest, ApplyResponse};
 use crate::sysfs::Sysfs;
@@ -201,6 +202,32 @@ pub fn apply(fs: &Sysfs, request: &ApplyRequest) -> ApplyResponse {
             );
         } else {
             response.skipped.push(format!("platform already {target}"));
+        }
+    }
+
+    // 7. Optional LenovoLegionLinux controls. The fan curve is written last
+    //    because an LLL power-mode change reloads the firmware curve.
+    if let Some(legion_request) = &request.legion {
+        if let Some(fullspeed) = legion_request.fullspeed {
+            record(
+                &mut response,
+                legion::set_fullspeed(fs, fullspeed, request.dry_run),
+                "legion.fullspeed",
+            );
+        }
+        if let Some(powermode) = legion_request.powermode {
+            record(
+                &mut response,
+                legion::set_powermode(fs, powermode, request.dry_run),
+                "legion.powermode",
+            );
+        }
+        if let Some(curve) = &legion_request.fan_curve {
+            record(
+                &mut response,
+                legion::apply_curve(fs, curve, request.dry_run),
+                "legion.fan_curve",
+            );
         }
     }
 

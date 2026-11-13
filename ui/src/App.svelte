@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import type { Capabilities } from "./lib/types";
+  import type { Capabilities, FanCurve } from "./lib/types";
 
   type Tab = "dashboard" | "power" | "fan" | "system" | "ec";
 
@@ -55,6 +55,7 @@
   let dirty = $state(false);
   let takeoverStatus = $state<TakeoverStatus | null>(null);
   let wizardBusy = $state(false);
+  let curveDraft = $state<FanCurve | null>(null);
 
   async function refresh(silent = false) {
     if (!silent) loading = true;
@@ -71,6 +72,11 @@
         ecDraft = draft;
         platformTarget = next.platform.current ?? "";
         dirty = false;
+        if (next.legion.fan_curve) {
+          curveDraft = structuredClone(next.legion.fan_curve);
+        } else {
+          curveDraft = null;
+        }
       }
     } catch (reason) {
       error = String(reason);
@@ -217,6 +223,9 @@
     }
     ecDraft = draft;
     platformTarget = capabilities.platform.current ?? "";
+    curveDraft = capabilities.legion.fan_curve
+      ? structuredClone(capabilities.legion.fan_curve)
+      : null;
     dirty = false;
   }
 
@@ -333,6 +342,46 @@
   async function setChargeType(type: string) {
     await send({ battery: { charge_type: type } });
   }
+
+  async function setLegionFullspeed(enabled: boolean) {
+    await send({ legion: { fullspeed: enabled } });
+  }
+
+  async function setLegionPowermode(mode: number) {
+    await send({ legion: { powermode: mode } });
+  }
+
+  async function applyCurve() {
+    if (!curveDraft) return;
+    if (!confirm("将把整条风扇曲线写入 EC，过程会短暂改变风扇转速。\n\n继续吗？")) return;
+    await send({ legion: { fan_curve: curveDraft } });
+  }
+
+  function curveValue(group: "fan1_pwm" | "fan2_pwm" | "cpu_temp" | "gpu_temp" | "ic_temp", index: number): string {
+    const values = curveDraft?.[group];
+    if (!values || values[index] === undefined) return "";
+    return String(values[index]);
+  }
+
+  function setCurveValue(
+    group: "fan1_pwm" | "fan2_pwm" | "cpu_temp" | "gpu_temp" | "ic_temp",
+    index: number,
+    raw: string,
+  ) {
+    if (!curveDraft) return;
+    const values = curveDraft[group];
+    if (!values) return;
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed)) return;
+    values[index] = parsed;
+    curveDraft = { ...curveDraft };
+  }
+
+  const legionPowermodes = [
+    { mode: 0, label: "均衡" },
+    { mode: 1, label: "性能" },
+    { mode: 2, label: "安静" },
+  ];
 
   async function setBacklight(value: number) {
     await send({ led: { name: "platform::kbd_backlight", brightness: value } });
@@ -610,6 +659,136 @@
                 <div class="sensor"><strong>{sensor.label}</strong><span>{number(sensor.value)} {sensor.unit}</span></div>
               {/each}
             </div>
+            <div class="mode-row">
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  checked={capabilities.legion.fullspeed === true}
+                  onchange={(event) => setLegionFullspeed((event.currentTarget as HTMLInputElement).checked)}
+                  disabled={busy || !capabilities.legion.fullspeed_path}
+                />
+                风扇全速
+              </label>
+              {#each legionPowermodes as entry}
+                <button
+                  class="mode"
+                  class:active={Number(capabilities.legion.powermode) === entry.mode}
+                  onclick={() => setLegionPowermode(entry.mode)}
+                  disabled={busy || !capabilities.legion.powermode_path}
+                >
+                  {entry.label}
+                  <span>powermode {entry.mode}</span>
+                </button>
+              {/each}
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>风扇曲线</h2>
+              <span class="hint">
+                {curveDraft ? `${curveDraft.points} 个点 · 通过 hwmon 写入` : "本机未暴露 hwmon 风扇曲线"}
+              </span>
+            </div>
+            {#if curveDraft}
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>点</th>
+                      <th>风扇 1 PWM</th>
+                      {#if curveDraft.fan2_pwm}<th>风扇 2 PWM</th>{/if}
+                      <th>CPU °C</th>
+                      {#if curveDraft.gpu_temp}<th>GPU °C</th>{/if}
+                      {#if curveDraft.ic_temp}<th>IC °C</th>{/if}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each Array.from({ length: curveDraft.points }, (_, index) => index) as index}
+                      <tr>
+                        <td class="mono">{index + 1}</td>
+                        <td>
+                          <input
+                            class="cell-input"
+                            type="number"
+                            min="0"
+                            max="255"
+                            value={curveValue("fan1_pwm", index)}
+                            onchange={(event) => setCurveValue("fan1_pwm", index, (event.currentTarget as HTMLInputElement).value)}
+                          />
+                        </td>
+                        {#if curveDraft.fan2_pwm}
+                          <td>
+                            <input
+                              class="cell-input"
+                              type="number"
+                              min="0"
+                              max="255"
+                              value={curveValue("fan2_pwm", index)}
+                              onchange={(event) => setCurveValue("fan2_pwm", index, (event.currentTarget as HTMLInputElement).value)}
+                            />
+                          </td>
+                        {/if}
+                        <td>
+                          <input
+                            class="cell-input"
+                            type="number"
+                            min="0"
+                            max="127"
+                            value={curveValue("cpu_temp", index)}
+                            onchange={(event) => setCurveValue("cpu_temp", index, (event.currentTarget as HTMLInputElement).value)}
+                          />
+                        </td>
+                        {#if curveDraft.gpu_temp}
+                          <td>
+                            <input
+                              class="cell-input"
+                              type="number"
+                              min="0"
+                              max="127"
+                              value={curveValue("gpu_temp", index)}
+                              onchange={(event) => setCurveValue("gpu_temp", index, (event.currentTarget as HTMLInputElement).value)}
+                            />
+                          </td>
+                        {/if}
+                        {#if curveDraft.ic_temp}
+                          <td>
+                            <input
+                              class="cell-input"
+                              type="number"
+                              min="0"
+                              max="127"
+                              value={curveValue("ic_temp", index)}
+                              onchange={(event) => setCurveValue("ic_temp", index, (event.currentTarget as HTMLInputElement).value)}
+                            />
+                          </td>
+                        {/if}
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+              <div class="panel-actions">
+                <button
+                  class="ghost"
+                  onclick={() => (curveDraft = capabilities?.legion.fan_curve ? structuredClone(capabilities.legion.fan_curve) : null)}
+                  disabled={busy}
+                >
+                  还原
+                </button>
+                <button class="primary" onclick={applyCurve} disabled={busy}>
+                  {busy ? "写入中…" : "写入曲线"}
+                </button>
+              </div>
+              <p class="hint curve-note">
+                温度与转速必须随点号单调不减。部分机型会把 PWM 四舍五入到 0–10 档；切换 LLL 电源模式或重启后
+                固件可能恢复默认曲线，需要重新写入。
+              </p>
+            {:else}
+              <p class="hint curve-note">
+                legion_hwmon 已加载，但没有 pwm*_auto_point* 属性；该机型的 LLL 驱动可能尚未支持风扇曲线写入。
+              </p>
+            {/if}
           </section>
         {:else}
           <section class="notice">

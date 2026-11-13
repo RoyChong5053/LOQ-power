@@ -441,8 +441,16 @@ loq-power fullcharge
 ## 12. 当前状态
 
 - 旧 Python 实现已移至 `legacy/`，仅作参考与回滚。
-- 根目录将只保留 Rust workspace、`plan.md`、`README.md`、`packaging/`、`docs/`。
-- 开发从 Phase 0 开始。
+- Phase 0–5 已完成：workspace、只读探测、写层与 helper、守护进程 + polkit、
+  GUI 写入、TLP 导入/接管/回滚。
+- Phase 6 已完成：AC/BAT 轮询切换、开机断言、logind 唤醒后重放。
+- Phase 7 已完成：检测到 `legion_hwmon` 时提供风扇曲线、全速开关与 powermode；
+  未安装时自动隐藏，绝不自动加载模块。
+- Phase 8 进行中：安装脚本、PKGBUILD、desktop/polkit/D-Bus、文档与 CI 已就绪；
+  剩余工作是真机验证与发布打包。
+- 硬件验证：EC 写入/回读、热模式切换、PPD 兼容接口与 hold/release 已在本机
+  （LOQ 15ARP9，PQCN24WW）验证；LLL 风扇曲线因未安装模块仅通过 fake sysfs
+  测试。
 
 ---
 

@@ -143,8 +143,20 @@ export interface LegionInfo {
   fancurve: string | null;
   powermode_path: string | null;
   powermode: string | null;
+  fullspeed_path: string | null;
+  fullspeed: boolean | null;
+  fan_curve: FanCurve | null;
   temperatures: Sensor[];
   fans: Sensor[];
+}
+
+export interface FanCurve {
+  points: number;
+  fan1_pwm: number[];
+  fan2_pwm?: number[] | null;
+  cpu_temp: number[];
+  gpu_temp?: number[] | null;
+  ic_temp?: number[] | null;
 }
 
 export interface Capabilities {
