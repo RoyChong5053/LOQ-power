@@ -42,6 +42,22 @@ fn dry_run_writes_no_files_and_lists_every_step() {
 }
 
 #[test]
+fn status_reports_a_rollback_record() {
+    let _guard = lock_env();
+    let temp = tempfile::tempdir().unwrap();
+    let record = temp.path().join("takeover.json");
+    fs::write(&record, "{}").unwrap();
+    unsafe {
+        std::env::set_var("LOQ_POWER_TAKEOVER", &record);
+        std::env::set_var("LOQ_POWER_CONFIG", temp.path().join("profiles.toml"));
+    }
+
+    let status = takeover::status(&Sysfs::with_root(temp.path()));
+    assert!(status.rollback_available);
+    assert!(!status.taken_over, "TLP is still active on the test host");
+}
+
+#[test]
 fn refuses_to_overwrite_an_existing_rollback_record() {
     let _guard = lock_env();
     let temp = tempfile::tempdir().unwrap();

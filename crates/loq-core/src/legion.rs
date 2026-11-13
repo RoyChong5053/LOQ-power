@@ -285,11 +285,13 @@ pub fn apply_curve(fs: &Sysfs, curve: &FanCurve, dry_run: bool) -> Result<Vec<Wr
     if let Some(values) = &curve.fan2_pwm {
         check_vector("fan2_pwm", values, curve.points, 255)?;
     }
-    if live.gpu_temp.is_some() != curve.gpu_temp.is_some()
+    if live.fan2_pwm.is_some() != curve.fan2_pwm.is_some()
+        || live.gpu_temp.is_some() != curve.gpu_temp.is_some()
         || live.ic_temp.is_some() != curve.ic_temp.is_some()
     {
         return Err(Error::InvalidValue(
-            "curve does not match the temperature sensors this machine exposes".to_string(),
+            "curve does not match the fans and temperature sensors this machine exposes"
+                .to_string(),
         ));
     }
     check_vector("cpu_temp", &curve.cpu_temp, curve.points, 127)?;

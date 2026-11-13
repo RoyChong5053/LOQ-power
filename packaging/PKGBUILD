@@ -41,7 +41,7 @@ package() {
   install -Dm644 packaging/icons/hicolor/scalable/apps/org.loq.Power.svg \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/org.loq.Power.svg"
 
-  install -Dm644 packaging/profiles.toml "$pkgdir/etc/loq-power/profiles.toml"
+  install -Dm644 packaging/profiles.toml "$pkgdir/etc/loq-power/profiles.toml.example"
 
   install -d "$pkgdir/usr/share/doc/$pkgname"
   install -m644 README.md docs/*.md "$pkgdir/usr/share/doc/$pkgname/"

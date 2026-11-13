@@ -65,7 +65,8 @@ sudo ./packaging/install.sh
 ```
 
 脚本安装二进制、systemd 单元、D-Bus 配置、polkit 策略、desktop 文件和示例配置，
-但**不会**停用 TLP。
+但**不会**停用 TLP，也不会创建 `/etc/loq-power/profiles.toml`（否则接管向导无法
+导入当前 TLP 配置）。需要自定义时复制示例文件即可。
 
 手工安装时参考：
 
@@ -74,7 +75,7 @@ sudo install -m644 packaging/systemd/loq-powerd.service /usr/lib/systemd/system/
 sudo install -m644 packaging/dbus/org.loq.Power1.conf /usr/share/dbus-1/system.d/
 sudo install -m644 packaging/dbus/org.loq.Power1.service /usr/share/dbus-1/system-services/
 sudo install -m644 packaging/polkit/org.loq.power.policy /usr/share/polkit-1/actions/
-sudo install -m644 packaging/profiles.toml /etc/loq-power/profiles.toml
+sudo install -m644 packaging/profiles.toml /etc/loq-power/profiles.toml.example
 ```
 
 ## 使用

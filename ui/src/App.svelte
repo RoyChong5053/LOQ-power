@@ -433,7 +433,7 @@
         </p>
       </div>
       <div class="actions">
-        <button class="ghost" onclick={() => { refresh(); loadDaemon(); }} disabled={loading || busy}>
+        <button class="ghost" onclick={() => { refresh(); loadDaemon(); loadTakeover(); }} disabled={loading || busy}>
           {loading ? "读取中…" : "刷新"}
         </button>
       </div>

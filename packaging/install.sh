@@ -88,9 +88,9 @@ install_files() {
     install -m644 "$ROOT/packaging/icons/hicolor/scalable/apps/org.loq.Power.svg" \
         "$ICONDIR/hicolor/scalable/apps/org.loq.Power.svg"
 
-    if [ ! -f "$CONFDIR/profiles.toml" ]; then
-        install -m644 "$ROOT/packaging/profiles.toml" "$CONFDIR/profiles.toml"
-    fi
+    # Only ship an example: a real profiles.toml here would stop the takeover
+    # wizard from importing the live TLP configuration.
+    install -m644 "$ROOT/packaging/profiles.toml" "$CONFDIR/profiles.toml.example"
 
     systemctl daemon-reload 2>/dev/null || true
     systemctl reload dbus 2>/dev/null || systemctl restart dbus 2>/dev/null || true

@@ -81,8 +81,11 @@ pub struct State {
 
 impl State {
     pub fn new(fs: Sysfs, profiles: ProfileFile) -> Self {
-        let active_profile = profiles.power.ac.clone();
         let power_source = PowerSource::detect(&fs);
+        let active_profile = match power_source {
+            PowerSource::Battery => profiles.power.battery.clone(),
+            _ => profiles.power.ac.clone(),
+        };
         let thermal = platform::detect(&fs)
             .current
             .unwrap_or_else(|| "balanced".to_string());

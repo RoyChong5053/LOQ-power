@@ -332,6 +332,34 @@ pub fn resolve(fs: &Sysfs, profile: &Profile) -> Resolved {
     if let Some(cpu_profile) = &profile.cpu {
         let info = cpu::detect(fs);
         let mut cpu_request = cpu_profile.clone();
+
+        // The kernel restricts governors and EPP hints per platform profile
+        // (on AC this machine only reports `performance`). Drop an unsupported
+        // value with a warning instead of failing the whole profile.
+        if let Some(governor) = cpu_request.governor.clone()
+            && !info.available_governors.is_empty()
+            && !info
+                .available_governors
+                .iter()
+                .any(|value| value == &governor)
+        {
+            resolved.warnings.push(format!(
+                "本机不支持 governor {governor}（可用：{}），已跳过",
+                info.available_governors.join(", ")
+            ));
+            cpu_request.governor = None;
+        }
+        if let Some(epp) = cpu_request.epp.clone()
+            && !info.available_epp.is_empty()
+            && !info.available_epp.iter().any(|value| value == &epp)
+        {
+            resolved.warnings.push(format!(
+                "当前电源状态下不支持 EPP {epp}（可用：{}），已跳过",
+                info.available_epp.join(", ")
+            ));
+            cpu_request.epp = None;
+        }
+
         if let (Some(min), Some(value)) = (info.cpuinfo_min_khz, cpu_request.min_khz)
             && value < min
         {

@@ -400,7 +400,7 @@ fn restore_inner(dry_run: bool, stop_daemon: bool) -> Result<Report> {
         }
     }
 
-    if !dry_run {
+    if !dry_run && report.errors.is_empty() {
         match std::fs::remove_file(&backup_path) {
             Ok(()) => report.steps.push(Step {
                 action: format!("remove {}", backup_path.display()),
@@ -427,12 +427,11 @@ pub struct TakeoverStatus {
 
 pub fn status(fs: &Sysfs) -> TakeoverStatus {
     let tlp = tlp::detect(fs);
+    // The rollback record is only removed by `restore-tlp`, so its presence
+    // means a takeover happened. TLP being inactive confirms it took effect.
     let rollback = state_path().exists();
     TakeoverStatus {
-        taken_over: !rollback
-            && tlp.installed
-            && tlp.service_active == Some(false)
-            && crate::services::is_active(DAEMON_UNIT) == Some(true),
+        taken_over: rollback && tlp.service_active == Some(false),
         rollback_available: rollback,
         tlp,
     }
