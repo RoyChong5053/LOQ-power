@@ -10,6 +10,12 @@ TLP 在本机同时运行 `tlp.service` 和 `tlp-pd.service`。LOQ Power 不会�
 PCIe ASPM、WiFi 省电、USB autosuspend 等设置被吸收进配置档的
 `power_saving` 段。
 
+## 为什么不会自动接管
+
+安装脚本不会启用 `loq-powerd.service`，仓库也不提供 D-Bus 自动激活文件。
+`loq-powerd` 的单元带有 `Conflicts=tlp.service tlp-pd.service`，因此只有显式启动
+它才会停用 TLP——而唯一的正常入口就是本页的接管命令或 GUI 向导。
+
 ## 三种入口
 
 ```bash

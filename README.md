@@ -70,12 +70,14 @@ sudo ./packaging/install.sh
 但**不会**停用 TLP，也不会创建 `/etc/loq-power/profiles.toml`（否则接管向导无法
 导入当前 TLP 配置）。需要自定义时复制示例文件即可。
 
+守护进程**不会**被 D-Bus 自动激活：只有接管向导（或显式 `systemctl start
+loq-powerd`）才会启动它，避免在 TLP 仍在运行时被动接管。
+
 手工安装时参考：
 
 ```bash
 sudo install -m644 packaging/systemd/loq-powerd.service /usr/lib/systemd/system/
 sudo install -m644 packaging/dbus/org.loq.Power1.conf /usr/share/dbus-1/system.d/
-sudo install -m644 packaging/dbus/org.loq.Power1.service /usr/share/dbus-1/system-services/
 sudo install -m644 packaging/polkit/org.loq.power.policy /usr/share/polkit-1/actions/
 sudo install -m644 packaging/profiles.toml /etc/loq-power/profiles.toml.example
 ```

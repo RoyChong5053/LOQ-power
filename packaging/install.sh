@@ -20,7 +20,6 @@ DESTDIR="${DESTDIR:-}"
 BINDIR="$DESTDIR$PREFIX/bin"
 UNITDIR="$DESTDIR$PREFIX/lib/systemd/system"
 DBUSDIR="$DESTDIR$PREFIX/share/dbus-1/system.d"
-SERVICEDIR="$DESTDIR$PREFIX/share/dbus-1/system-services"
 POLKITDIR="$DESTDIR$PREFIX/share/polkit-1/actions"
 APPDIR="$DESTDIR$PREFIX/share/applications"
 ICONDIR="$DESTDIR$PREFIX/share/icons"
@@ -39,7 +38,7 @@ uninstall() {
     require_root
     rm -f "$BINDIR/loq-power" "$BINDIR/loq-power-helper" "$BINDIR/loq-powerd" "$BINDIR/loq-gui"
     rm -f "$UNITDIR/loq-powerd.service"
-    rm -f "$DBUSDIR/org.loq.Power1.conf" "$SERVICEDIR/org.loq.Power1.service"
+    rm -f "$DBUSDIR/org.loq.Power1.conf"
     rm -f "$POLKITDIR/org.loq.power.policy"
     rm -f "$APPDIR/org.loq.Power.desktop"
     rm -f "$ICONDIR/hicolor/128x128/apps/org.loq.Power.png"
@@ -62,7 +61,7 @@ install_files() {
     [ -x "$ROOT/target/release/loq-power-helper" ] || build_hint
     [ -x "$ROOT/target/release/loq-powerd" ] || build_hint
 
-    install -d "$BINDIR" "$UNITDIR" "$DBUSDIR" "$SERVICEDIR" "$POLKITDIR" "$APPDIR"
+    install -d "$BINDIR" "$UNITDIR" "$DBUSDIR" "$POLKITDIR" "$APPDIR"
     install -d "$ICONDIR/hicolor/128x128/apps" "$ICONDIR/hicolor/scalable/apps"
     install -d "$CONFDIR"
 
@@ -80,7 +79,6 @@ install_files() {
 
     install -m644 "$ROOT/packaging/systemd/loq-powerd.service" "$UNITDIR/loq-powerd.service"
     install -m644 "$ROOT/packaging/dbus/org.loq.Power1.conf" "$DBUSDIR/org.loq.Power1.conf"
-    install -m644 "$ROOT/packaging/dbus/org.loq.Power1.service" "$SERVICEDIR/org.loq.Power1.service"
     install -m644 "$ROOT/packaging/polkit/org.loq.power.policy" "$POLKITDIR/org.loq.power.policy"
     install -m644 "$ROOT/packaging/desktop/org.loq.Power.desktop" "$APPDIR/org.loq.Power.desktop"
     install -m644 "$ROOT/packaging/icons/hicolor/128x128/apps/org.loq.Power.png" \
@@ -92,9 +90,12 @@ install_files() {
     # wizard from importing the live TLP configuration.
     install -m644 "$ROOT/packaging/profiles.toml" "$CONFDIR/profiles.toml.example"
 
-    systemctl daemon-reload 2>/dev/null || true
-    systemctl reload dbus 2>/dev/null || systemctl restart dbus 2>/dev/null || true
-    systemctl restart polkit 2>/dev/null || true
+    # Staged installs (DESTDIR) must not touch the host's service manager.
+    if [ -z "$DESTDIR" ]; then
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl reload dbus 2>/dev/null || systemctl restart dbus 2>/dev/null || true
+        systemctl restart polkit 2>/dev/null || true
+    fi
 
     echo
     echo "LOQ Power installed."

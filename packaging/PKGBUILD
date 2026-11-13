@@ -30,8 +30,6 @@ package() {
     "$pkgdir/usr/lib/systemd/system/loq-powerd.service"
   install -Dm644 packaging/dbus/org.loq.Power1.conf \
     "$pkgdir/usr/share/dbus-1/system.d/org.loq.Power1.conf"
-  install -Dm644 packaging/dbus/org.loq.Power1.service \
-    "$pkgdir/usr/share/dbus-1/system-services/org.loq.Power1.service"
   install -Dm644 packaging/polkit/org.loq.power.policy \
     "$pkgdir/usr/share/polkit-1/actions/org.loq.power.policy"
   install -Dm644 packaging/desktop/org.loq.Power.desktop \

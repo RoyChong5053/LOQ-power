@@ -1,5 +1,0 @@
-[D-BUS Service]
-Name=org.loq.Power1
-Exec=/usr/bin/loq-powerd
-User=root
-SystemdService=loq-powerd.service
