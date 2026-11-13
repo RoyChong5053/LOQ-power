@@ -260,7 +260,10 @@ pub fn apply(fs: &Sysfs, settings: &PowerSaving, dry_run: bool) -> PowerSavingRe
                 ));
             } else {
                 match write::write_verified(fs, path, policy, dry_run, |actual, expected| {
-                    parse_choice(actual).0.as_deref() == Some(expected)
+                    // Real kernels echo the full list with the active entry in
+                    // brackets; a plain echo is accepted too.
+                    write::exact(actual, expected)
+                        || parse_choice(actual).0.as_deref() == Some(expected)
                 }) {
                     Ok(write) => report.writes.push(write),
                     Err(error) => report.errors.push(format!("pcie_aspm: {error}")),
