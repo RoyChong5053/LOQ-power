@@ -50,7 +50,8 @@ uninstall() {
 build_hint() {
     echo "build the release binaries first:" >&2
     echo "  cargo build --release -p loq-cli -p loq-helper -p loq-powerd" >&2
-    echo "  cargo tauri build --release   # or: bun run build in ui/ then cargo build --release -p loq-gui" >&2
+    echo "  cargo build --release -p loq-gui --features production" >&2
+    echo "  # (or: bun run build in ui/ then cargo tauri build --release)" >&2
     exit 1
 }
 

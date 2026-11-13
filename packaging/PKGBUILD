@@ -15,7 +15,12 @@ build() {
   cd "$pkgname"
   (cd ui && bun install --frozen-lockfile && bun run build)
   cargo build --release --offline \
-    -p loq-cli -p loq-helper -p loq-powerd -p loq-gui
+    -p loq-cli -p loq-helper -p loq-powerd
+  # loq-gui needs `--features production` for a release build: it re-exports
+  # Tauri's `custom-protocol` feature, which flips the `dev` cfg off so the
+  # shipped binary serves the bundled `../../ui/dist` at runtime instead of
+  # trying to reach the Vite dev server (http://localhost:1420) and failing.
+  cargo build --release --offline -p loq-gui --features production
 }
 
 package() {

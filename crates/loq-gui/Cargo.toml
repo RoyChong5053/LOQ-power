@@ -18,5 +18,20 @@ tauri-build = { version = "2", features = [] }
 loq-core = { path = "../loq-core" }
 serde.workspace = true
 serde_json.workspace = true
-tauri = { version = "2", features = [] }
+tauri = { version = "2" }
 zbus = { version = "5", features = ["tokio"] }
+
+[features]
+# Re-export Tauri's `custom-protocol` feature so a packaged release build
+# serves the embedded frontend at runtime instead of the Vite dev server.
+#
+# Tauri decides the `dev` cfg from this feature (see tauri-2.12.5 build.rs:
+# `dev = !custom_protocol`). When `dev` is on, Tauri navigates to `devUrl`
+# (`http://localhost:1420`) and does not bundle the frontend; when off, it
+# serves `frontendDist` (`../../ui/dist`) from the bundled `tauri://` protocol.
+#
+# Therefore this feature must be enabled ONLY for release/packaged builds
+# (the packaging steps pass `--features production`). The dev workflow
+# (`cargo build -p loq-gui` without the feature, then `bun run dev`) keeps the
+# `dev` cfg on so the live Vite dev server is used.
+production = ["tauri/custom-protocol"]
