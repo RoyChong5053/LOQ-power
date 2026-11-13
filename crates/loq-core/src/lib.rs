@@ -1,3 +1,4 @@
+pub mod apply;
 pub mod battery;
 pub mod cpu;
 pub mod ec;
@@ -9,10 +10,14 @@ pub mod leds;
 pub mod legion;
 pub mod platform;
 pub mod probe;
+pub mod request;
 pub mod services;
 pub mod sysfs;
 pub mod tlp;
+pub mod write;
 
 pub use error::{Error, Result};
 pub use probe::{Capabilities, probe, probe_with};
+pub use request::{ApplyRequest, ApplyResponse};
 pub use sysfs::Sysfs;
+pub use write::WriteReport;

@@ -2,7 +2,9 @@ use std::os::unix::fs::PermissionsExt;
 
 use serde::Serialize;
 
+use crate::error::{Error, Result};
 use crate::sysfs::Sysfs;
+use crate::write::{self, WriteReport};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IdeapadAttribute {
@@ -109,4 +111,74 @@ pub fn detect(fs: &Sysfs) -> IdeapadInfo {
         base: Some(base),
         attributes,
     }
+}
+
+/// Documented values for `fan_mode`.
+pub const FAN_MODES: &[(i64, &str)] = &[
+    (0, "Super Silent"),
+    (1, "Standard"),
+    (2, "Dust Cleaning"),
+    (4, "Efficient Thermal Dissipation"),
+];
+
+pub fn fan_mode_label(mode: i64) -> String {
+    FAN_MODES
+        .iter()
+        .find(|(value, _)| *value == mode)
+        .map(|(_, label)| (*label).to_string())
+        .unwrap_or_else(|| format!("unknown ({mode})"))
+}
+
+fn attribute_path(fs: &Sysfs, name: &str) -> Result<String> {
+    let base =
+        find_base(fs).ok_or_else(|| Error::NotFound("ideapad_acpi interface".to_string()))?;
+    let path = format!("{base}/{name}");
+    if !fs.exists(&path) {
+        return Err(Error::NotFound(format!("ideapad attribute {name}")));
+    }
+    Ok(path)
+}
+
+/// Write one of the whitelisted ideapad attributes.
+pub fn set_known(fs: &Sysfs, name: &str, value: &str, dry_run: bool) -> Result<WriteReport> {
+    if known(name).is_none() {
+        return Err(Error::NotWritable(format!(
+            "ideapad attribute {name} is not in the safe write list"
+        )));
+    }
+    let path = attribute_path(fs, name)?;
+    write::write_verified(fs, &path, value, dry_run, write::exact)
+}
+
+/// Change the EC fan mode.
+///
+/// The readback is known to be unreliable on this generation, so a mismatch
+/// is reported but does not fail the operation. `2` (dust cleaning) and `4`
+/// (full speed) are loud; the callers must confirm them explicitly.
+pub fn set_fan_mode(fs: &Sysfs, mode: i64, dry_run: bool) -> Result<WriteReport> {
+    if !FAN_MODES.iter().any(|(value, _)| *value == mode) {
+        return Err(Error::InvalidValue(format!(
+            "unknown fan mode {mode}; expected one of 0, 1, 2, 4"
+        )));
+    }
+
+    let path = attribute_path(fs, "fan_mode")?;
+    write::write_tolerant(fs, &path, &mode.to_string(), dry_run)
+}
+
+/// Toggle `fn_lock` or `conservation_mode`.
+pub fn set_flag(fs: &Sysfs, name: &str, enabled: bool, dry_run: bool) -> Result<WriteReport> {
+    if name != "fn_lock" && name != "conservation_mode" {
+        return Err(Error::NotWritable(format!(
+            "ideapad flag {name} is not supported"
+        )));
+    }
+    let path = attribute_path(fs, name)?;
+    write::write_verified(
+        fs,
+        &path,
+        if enabled { "1" } else { "0" },
+        dry_run,
+        write::exact,
+    )
 }

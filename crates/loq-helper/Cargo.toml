@@ -1,0 +1,17 @@
+[package]
+name = "loq-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Privileged pkexec helper for LOQ Power"
+
+[[bin]]
+name = "loq-power-helper"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+loq-core = { path = "../loq-core" }
+serde_json.workspace = true

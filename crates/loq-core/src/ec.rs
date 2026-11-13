@@ -1,6 +1,9 @@
 use serde::Serialize;
 
+use crate::error::{Error, Result};
+use crate::platform;
 use crate::sysfs::Sysfs;
+use crate::write::{self, WriteReport};
 
 /// One EC firmware attribute exposed by `lenovo-wmi-other`.
 #[derive(Debug, Clone, Serialize)]
@@ -147,4 +150,44 @@ pub fn discover(fs: &Sysfs) -> EcInfo {
 pub fn current(fs: &Sysfs, name: &str) -> Option<i64> {
     let base = find_base(fs)?;
     fs.read_i64(&format!("{base}/{name}/current_value"))
+}
+
+/// Look up a single attribute without walking the whole tree.
+pub fn attribute(fs: &Sysfs, name: &str) -> Option<EcAttribute> {
+    let base = find_base(fs)?;
+    if !fs.exists(&format!("{base}/{name}/current_value")) {
+        return None;
+    }
+    Some(read_attr(fs, &base, name))
+}
+
+/// Validate and write one EC attribute.
+///
+/// The kernel only accepts these writes while the platform is in the
+/// `custom` thermal mode, so the guard runs before anything is touched.
+pub fn set_attribute(fs: &Sysfs, name: &str, value: i64, dry_run: bool) -> Result<WriteReport> {
+    let attribute =
+        attribute(fs, name).ok_or_else(|| Error::NotFound(format!("EC attribute {name}")))?;
+
+    write::check_range(
+        &attribute.display_name,
+        value,
+        attribute.min,
+        attribute.max,
+        attribute.step,
+    )?;
+
+    if !dry_run && !platform::is_custom(fs) {
+        return Err(Error::RequiresCustomMode(
+            "switch to CUSTOM before writing EC limits".to_string(),
+        ));
+    }
+
+    write::write_verified(
+        fs,
+        &attribute.path,
+        &value.to_string(),
+        dry_run,
+        |actual, _| actual.trim().parse::<i64>().ok() == Some(value),
+    )
 }

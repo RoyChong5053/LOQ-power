@@ -1,6 +1,8 @@
 use serde::Serialize;
 
+use crate::error::{Error, Result};
 use crate::sysfs::Sysfs;
+use crate::write::{self, WriteReport};
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct BatteryInfo {
@@ -96,4 +98,49 @@ pub fn detect(fs: &Sysfs) -> PowerSupplyInfo {
         ac_online,
         ac_name,
     }
+}
+
+/// First battery reported by the kernel.
+pub fn primary(fs: &Sysfs) -> Option<BatteryInfo> {
+    detect(fs).batteries.into_iter().next()
+}
+
+/// Change the battery charge type (`Fast`, `Standard`, `Long_Life`).
+///
+/// The kernel echoes the full choice list with the active entry in brackets,
+/// so validation runs against the parsed list and the readback check uses
+/// [`write::current_choice`].
+pub fn set_charge_type(
+    fs: &Sysfs,
+    battery: &str,
+    charge_type: &str,
+    dry_run: bool,
+) -> Result<WriteReport> {
+    let base = format!("/sys/class/power_supply/{battery}");
+    let path = format!("{base}/charge_types");
+
+    let Some(raw) = fs.read(&path) else {
+        return Err(Error::NotFound(format!(
+            "{path} (battery charge limits may only support charge_control_end_threshold)"
+        )));
+    };
+
+    let (_, choices) = parse_charge_types(&raw);
+    if !choices
+        .iter()
+        .any(|choice| choice.eq_ignore_ascii_case(charge_type))
+    {
+        return Err(Error::InvalidValue(format!(
+            "unknown charge type {charge_type}; expected one of {}",
+            choices.join(", ")
+        )));
+    }
+
+    let canonical = choices
+        .iter()
+        .find(|choice| choice.eq_ignore_ascii_case(charge_type))
+        .cloned()
+        .unwrap_or_else(|| charge_type.to_string());
+
+    write::write_verified(fs, &path, &canonical, dry_run, write::current_choice)
 }

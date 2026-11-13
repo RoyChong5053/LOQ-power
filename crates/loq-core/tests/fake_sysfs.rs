@@ -268,3 +268,20 @@ fn detects_platform_leds() {
     assert_eq!(leds[0].brightness, Some(1));
     assert_eq!(leds[0].max_brightness, Some(2));
 }
+
+#[test]
+fn charge_type_readback_matches_kernel_echo() {
+    // The kernel keeps the full choice list and wraps the active entry.
+    assert!(loq_core::write::current_choice(
+        "Fast Standard [Long_Life]",
+        "Long_Life"
+    ));
+    assert!(loq_core::write::current_choice(
+        "[Fast] Standard Long_Life",
+        "fast"
+    ));
+    assert!(!loq_core::write::current_choice(
+        "[Fast] Standard Long_Life",
+        "Long_Life"
+    ));
+}

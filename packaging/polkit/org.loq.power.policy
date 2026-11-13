@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>LOQ Power</vendor>
+  <vendor_url>https://github.com/RoyChong5053/LOQ-power</vendor_url>
+  <icon_name>computer</icon_name>
+
+  <action id="org.loq.power.read">
+    <description>Read power and EC state</description>
+    <description xml:lang="zh_CN">读取电源与 EC 状态</description>
+    <message>Authentication is required to read hardware power state</message>
+    <message xml:lang="zh_CN">读取硬件电源状态需要认证</message>
+    <defaults>
+      <allow_any>yes</allow_any>
+      <allow_inactive>yes</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.loq.power.apply">
+    <description>Apply power, thermal and battery settings</description>
+    <description xml:lang="zh_CN">应用功率、散热与电池设置</description>
+    <message>Authentication is required to change power settings</message>
+    <message xml:lang="zh_CN">修改电源设置需要认证</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.loq.power.helper">
+    <description>Run the LOQ Power privileged helper</description>
+    <description xml:lang="zh_CN">运行 LOQ Power 特权助手</description>
+    <message>Authentication is required to apply power settings</message>
+    <message xml:lang="zh_CN">应用电源设置需要认证</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/loq-power-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="org.loq.power.fan-curve">
+    <description>Write the EC fan curve</description>
+    <description xml:lang="zh_CN">写入 EC 风扇曲线</description>
+    <message>Authentication is required to change the fan curve</message>
+    <message xml:lang="zh_CN">修改风扇曲线需要认证</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.loq.power.takeover">
+    <description>Take over power management from TLP</description>
+    <description xml:lang="zh_CN">从 TLP 接管电源管理</description>
+    <message>Authentication is required to disable TLP and start LOQ Power</message>
+    <message xml:lang="zh_CN">停用 TLP 并启动 LOQ Power 需要认证</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.loq.power.raw-ec">
+    <description>Access raw EC registers</description>
+    <description xml:lang="zh_CN">访问原始 EC 寄存器</description>
+    <message>Authentication is required to access raw EC registers</message>
+    <message xml:lang="zh_CN">访问原始 EC 寄存器需要认证</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

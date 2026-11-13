@@ -1,6 +1,8 @@
 use serde::Serialize;
 
+use crate::error::{Error, Result};
 use crate::sysfs::Sysfs;
+use crate::write::{self, WriteReport};
 
 /// Thermal / platform profile state.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -60,4 +62,50 @@ pub fn detect(fs: &Sysfs) -> PlatformInfo {
 
 pub fn is_custom(fs: &Sysfs) -> bool {
     detect(fs).current.as_deref() == Some("custom")
+}
+
+/// Fan basis used before entering CUSTOM.
+///
+/// Switching to `custom` does not change the EC fan policy, so the fan keeps
+/// whatever `Fn+Q` last selected. `performance`/`max-power` pin the fans at
+/// full speed on Linux, so `balanced` is the only sane base.
+pub const CUSTOM_FAN_BASIS: &str = "balanced";
+
+/// Switch the thermal mode through the gamezone interface.
+pub fn set_profile(fs: &Sysfs, profile: &str, dry_run: bool) -> Result<WriteReport> {
+    let info = detect(fs);
+    let path = info
+        .gamezone_profile
+        .as_deref()
+        .ok_or_else(|| Error::NotFound("gamezone platform profile".to_string()))?;
+
+    if !info.choices.is_empty() && !info.choices.iter().any(|choice| choice == profile) {
+        return Err(Error::InvalidValue(format!(
+            "unknown thermal mode {profile}; expected one of {}",
+            info.choices.join(", ")
+        )));
+    }
+
+    write::write_verified(fs, path, profile, dry_run, write::exact)
+}
+
+/// Enter CUSTOM mode with a balanced fan basis, unless already there.
+///
+/// Returns the reports for the writes that were performed; an empty vector
+/// means the system was already in CUSTOM mode.
+pub fn ensure_custom(fs: &Sysfs, dry_run: bool) -> Result<Vec<WriteReport>> {
+    if is_custom(fs) {
+        return Ok(Vec::new());
+    }
+
+    let mut reports = vec![set_profile(fs, CUSTOM_FAN_BASIS, dry_run)?];
+    reports.push(set_profile(fs, "custom", dry_run)?);
+
+    if !dry_run && !is_custom(fs) {
+        return Err(Error::Other(
+            "switched the platform profile but CUSTOM mode was not confirmed".to_string(),
+        ));
+    }
+
+    Ok(reports)
 }

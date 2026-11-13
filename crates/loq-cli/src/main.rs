@@ -1,6 +1,16 @@
-use anyhow::Result;
+mod privilege;
+
+use std::collections::BTreeMap;
+use std::io::Read;
+
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use loq_core::Capabilities;
+use loq_core::request::{
+    ApplyRequest, ApplyResponse, BatteryRequest, CpuRequest, IdeapadRequest, LedRequest,
+};
+use loq_core::{Capabilities, Sysfs, battery, cpu, ec, ideapad, leds, platform, probe};
+
+use crate::privilege::execute;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -9,6 +19,14 @@ use loq_core::Capabilities;
     about = "LOQ Power — EC and power management for Lenovo LOQ laptops"
 )]
 struct Cli {
+    /// Print machine-readable JSON
+    #[arg(long, global = true)]
+    json: bool,
+
+    /// Validate and show the change without writing anything
+    #[arg(long, global = true)]
+    dry_run: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -16,44 +34,469 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Discover every EC/power capability exposed by the kernel
-    Probe {
-        /// Print the full capability manifest as JSON
-        #[arg(long)]
-        json: bool,
-    },
+    Probe,
     /// Show a short status summary
-    Status {
-        /// Print the full capability manifest as JSON
-        #[arg(long)]
-        json: bool,
+    Status,
+    /// Read or write EC firmware attributes
+    Ec {
+        #[command(subcommand)]
+        command: EcCommand,
     },
+    /// Read or switch the thermal/platform profile
+    Platform {
+        #[command(subcommand)]
+        command: PlatformCommand,
+    },
+    /// Read or change the battery charge type
+    Charge {
+        #[command(subcommand)]
+        command: ChargeCommand,
+    },
+    /// Read or change the EC fan mode
+    Fan {
+        #[command(subcommand)]
+        command: FanCommand,
+    },
+    /// Read or change CPU frequency settings
+    Cpu {
+        #[command(subcommand)]
+        command: CpuCommand,
+    },
+    /// Read or change platform LEDs
+    Led {
+        #[command(subcommand)]
+        command: LedCommand,
+    },
+    /// Apply a full JSON request (advanced / daemon use)
+    Apply {
+        /// Read the request from a file instead of stdin
+        #[arg(long)]
+        file: Option<std::path::PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum EcCommand {
+    /// List all discovered EC attributes
+    List,
+    /// Show a single attribute
+    Get { name: String },
+    /// Write a single attribute (enters CUSTOM mode automatically)
+    Set { name: String, value: i64 },
+}
+
+#[derive(Debug, Subcommand)]
+enum PlatformCommand {
+    Get,
+    Set { mode: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum ChargeCommand {
+    Get,
+    Set { charge_type: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum FanCommand {
+    Mode {
+        #[command(subcommand)]
+        command: FanModeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum FanModeCommand {
+    Get,
+    /// Modes: 0 silent, 1 standard, 2 dust cleaning, 4 full speed
+    Set {
+        mode: i64,
+        /// Required for the loud modes 2 and 4
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CpuCommand {
+    Get,
+    Set {
+        #[arg(long)]
+        governor: Option<String>,
+        #[arg(long)]
+        epp: Option<String>,
+        /// Minimum frequency in MHz
+        #[arg(long)]
+        min_mhz: Option<u64>,
+        /// Maximum frequency in MHz
+        #[arg(long)]
+        max_mhz: Option<u64>,
+        #[arg(long, conflicts_with = "no_boost")]
+        boost: bool,
+        #[arg(long)]
+        no_boost: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum LedCommand {
+    List,
+    Set { name: String, brightness: i64 },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let json = cli.json;
+    let dry_run = cli.dry_run;
+
     match cli.command {
-        Command::Probe { json } | Command::Status { json } => {
-            let capabilities = loq_core::probe();
+        Command::Probe => {
+            let capabilities = probe::probe();
             if json {
-                println!("{}", serde_json::to_string_pretty(&capabilities)?);
+                print_json(&capabilities)?;
             } else {
-                print_human(&capabilities);
+                print_probe(&capabilities);
             }
+        }
+        Command::Status => {
+            let capabilities = probe::probe();
+            if json {
+                print_json(&capabilities)?;
+            } else {
+                print_status(&capabilities);
+            }
+        }
+        Command::Ec { command } => handle_ec(command, json, dry_run)?,
+        Command::Platform { command } => handle_platform(command, json, dry_run)?,
+        Command::Charge { command } => handle_charge(command, json, dry_run)?,
+        Command::Fan { command } => handle_fan(command, json, dry_run)?,
+        Command::Cpu { command } => handle_cpu(command, json, dry_run)?,
+        Command::Led { command } => handle_led(command, json, dry_run)?,
+        Command::Apply { file } => {
+            let mut input = String::new();
+            match file {
+                Some(path) => {
+                    input = std::fs::read_to_string(&path)
+                        .with_context(|| format!("cannot read {}", path.display()))?;
+                }
+                None => {
+                    std::io::stdin()
+                        .read_to_string(&mut input)
+                        .context("cannot read request from stdin")?;
+                }
+            }
+
+            let mut request: ApplyRequest =
+                serde_json::from_str(&input).context("invalid JSON request")?;
+            if dry_run {
+                request.dry_run = true;
+            }
+            report(execute(request)?, json)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_ec(command: EcCommand, json: bool, dry_run: bool) -> Result<()> {
+    let fs = Sysfs::new();
+    match command {
+        EcCommand::List => {
+            let info = ec::discover(&fs);
+            if json {
+                print_json(&info)?;
+            } else if info.attributes.is_empty() {
+                println!("No lenovo-wmi-other EC attributes found.");
+            } else {
+                println!(
+                    "{:<22} {:>8} {:<4} {:<12} {:<8}",
+                    "ATTRIBUTE", "VALUE", "UNIT", "RANGE", "DEFAULT"
+                );
+                for attribute in &info.attributes {
+                    let range = match (attribute.min, attribute.max) {
+                        (Some(min), Some(max)) => format!("{min}..{max}"),
+                        _ => "?".to_string(),
+                    };
+                    println!(
+                        "{:<22} {:>8} {:<4} {:<12} {:<8}",
+                        attribute.name,
+                        attribute
+                            .current
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "?".to_string()),
+                        attribute.unit,
+                        range,
+                        attribute
+                            .default
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                    );
+                }
+            }
+        }
+        EcCommand::Get { name } => {
+            let attribute = ec::attribute(&fs, &name)
+                .ok_or_else(|| anyhow::anyhow!("EC attribute {name} not found"))?;
+            if json {
+                print_json(&attribute)?;
+            } else {
+                println!(
+                    "{}: {} {} [{:?}..{:?}] default {:?} step {:?}",
+                    attribute.display_name,
+                    attribute
+                        .current
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "?".to_string()),
+                    attribute.unit,
+                    attribute.min,
+                    attribute.max,
+                    attribute.default,
+                    attribute.step,
+                );
+            }
+        }
+        EcCommand::Set { name, value } => {
+            let request = ApplyRequest {
+                ec: BTreeMap::from([(name, value)]),
+                dry_run,
+                ..Default::default()
+            };
+            report(execute(request)?, json)?;
         }
     }
     Ok(())
 }
 
-fn print_human(capabilities: &Capabilities) {
-    println!("LOQ Power probe");
-    println!(
-        "Host    : {}",
-        capabilities.hostname.as_deref().unwrap_or("unknown")
-    );
-    println!(
-        "Kernel  : {}",
-        capabilities.kernel.as_deref().unwrap_or("unknown")
-    );
+fn handle_platform(command: PlatformCommand, json: bool, dry_run: bool) -> Result<()> {
+    match command {
+        PlatformCommand::Get => {
+            let info = platform::detect(&Sysfs::new());
+            if json {
+                print_json(&info)?;
+            } else {
+                println!(
+                    "{} (choices: {})",
+                    info.current.as_deref().unwrap_or("unknown"),
+                    info.choices.join(" ")
+                );
+            }
+        }
+        PlatformCommand::Set { mode } => {
+            let request = ApplyRequest {
+                platform: Some(mode),
+                dry_run,
+                ..Default::default()
+            };
+            report(execute(request)?, json)?;
+        }
+    }
+    Ok(())
+}
+
+fn handle_charge(command: ChargeCommand, json: bool, dry_run: bool) -> Result<()> {
+    let fs = Sysfs::new();
+    match command {
+        ChargeCommand::Get => {
+            let Some(battery) = battery::primary(&fs) else {
+                bail!("no battery found");
+            };
+            if json {
+                print_json(&battery)?;
+            } else {
+                println!(
+                    "{}: {} (choices: {})",
+                    battery.name,
+                    battery.charge_type.as_deref().unwrap_or("unknown"),
+                    battery.charge_types.join(" ")
+                );
+            }
+        }
+        ChargeCommand::Set { charge_type } => {
+            let request = ApplyRequest {
+                battery: Some(BatteryRequest {
+                    name: None,
+                    charge_type,
+                }),
+                dry_run,
+                ..Default::default()
+            };
+            report(execute(request)?, json)?;
+        }
+    }
+    Ok(())
+}
+
+fn handle_fan(command: FanCommand, json: bool, dry_run: bool) -> Result<()> {
+    let fs = Sysfs::new();
+    match command {
+        FanCommand::Mode { command } => match command {
+            FanModeCommand::Get => {
+                let info = ideapad::detect(&fs);
+                let value = info
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.name == "fan_mode")
+                    .and_then(|attribute| attribute.value.as_deref())
+                    .and_then(|value| value.parse::<i64>().ok());
+
+                if json {
+                    print_json(&serde_json::json!({
+                        "mode": value,
+                        "label": value.map(ideapad::fan_mode_label),
+                    }))?;
+                } else if let Some(mode) = value {
+                    println!("fan_mode {mode} ({})", ideapad::fan_mode_label(mode));
+                } else {
+                    println!("fan_mode unavailable");
+                }
+            }
+            FanModeCommand::Set { mode, yes } => {
+                if (mode == 2 || mode == 4) && !yes && !dry_run {
+                    bail!(
+                        "fan mode {mode} ({}) is loud; re-run with --yes to confirm",
+                        ideapad::fan_mode_label(mode)
+                    );
+                }
+                let request = ApplyRequest {
+                    ideapad: Some(IdeapadRequest {
+                        fan_mode: Some(mode),
+                        fn_lock: None,
+                    }),
+                    dry_run,
+                    ..Default::default()
+                };
+                report(execute(request)?, json)?;
+            }
+        },
+    }
+    Ok(())
+}
+
+fn handle_cpu(command: CpuCommand, json: bool, dry_run: bool) -> Result<()> {
+    let fs = Sysfs::new();
+    match command {
+        CpuCommand::Get => {
+            let info = cpu::detect(&fs);
+            if json {
+                print_json(&info)?;
+            } else {
+                println!(
+                    "{} cores | {} | governor {} | EPP {} | {}..{} kHz | boost {:?}",
+                    info.cpus,
+                    info.driver.as_deref().unwrap_or("?"),
+                    info.governor.as_deref().unwrap_or("?"),
+                    info.epp.as_deref().unwrap_or("?"),
+                    info.scaling_min_khz.unwrap_or(0),
+                    info.scaling_max_khz.unwrap_or(0),
+                    info.boost,
+                );
+                println!("governors: {}", info.available_governors.join(" "));
+                println!("EPP:       {}", info.available_epp.join(" "));
+            }
+        }
+        CpuCommand::Set {
+            governor,
+            epp,
+            min_mhz,
+            max_mhz,
+            boost,
+            no_boost,
+        } => {
+            let request = ApplyRequest {
+                cpu: Some(CpuRequest {
+                    governor,
+                    epp,
+                    min_khz: min_mhz.map(|value| value * 1000),
+                    max_khz: max_mhz.map(|value| value * 1000),
+                    boost: if boost {
+                        Some(true)
+                    } else if no_boost {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                }),
+                dry_run,
+                ..Default::default()
+            };
+            report(execute(request)?, json)?;
+        }
+    }
+    Ok(())
+}
+
+fn handle_led(command: LedCommand, json: bool, dry_run: bool) -> Result<()> {
+    let fs = Sysfs::new();
+    match command {
+        LedCommand::List => {
+            let info = leds::detect(&fs);
+            if json {
+                print_json(&info)?;
+            } else {
+                for led in info {
+                    println!(
+                        "{:<32} {}/{}",
+                        led.name,
+                        led.brightness
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "?".to_string()),
+                        led.max_brightness
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "?".to_string()),
+                    );
+                }
+            }
+        }
+        LedCommand::Set { name, brightness } => {
+            let request = ApplyRequest {
+                led: Some(LedRequest { name, brightness }),
+                dry_run,
+                ..Default::default()
+            };
+            report(execute(request)?, json)?;
+        }
+    }
+    Ok(())
+}
+
+fn report(response: ApplyResponse, json: bool) -> Result<()> {
+    if json {
+        print_json(&response)?;
+        return Ok(());
+    }
+
+    if response.dry_run {
+        println!("Dry run — nothing was written.");
+    }
+    for write in &response.writes {
+        println!(
+            "{}: {} -> {}{}",
+            write.target,
+            write.previous.as_deref().unwrap_or("?"),
+            write.value,
+            if write.dry_run { " (preview)" } else { "" },
+        );
+    }
+    for skipped in &response.skipped {
+        println!("skipped: {skipped}");
+    }
+    for error in &response.errors {
+        eprintln!("error: {error}");
+    }
+
+    if response.ok {
+        Ok(())
+    } else {
+        bail!("{} operation(s) failed", response.errors.len())
+    }
+}
+
+fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+fn print_status(capabilities: &Capabilities) {
     println!(
         "Machine : {} {} ({}) BIOS {}",
         capabilities.dmi.sys_vendor.as_deref().unwrap_or("?"),
@@ -61,166 +504,107 @@ fn print_human(capabilities: &Capabilities) {
         capabilities.dmi.board_name.as_deref().unwrap_or("?"),
         capabilities.dmi.bios_version.as_deref().unwrap_or("?"),
     );
-
-    println!();
     println!(
-        "EC / firmware attributes ({})",
+        "Platform: {}",
+        capabilities
+            .platform
+            .current
+            .as_deref()
+            .unwrap_or("unknown")
+    );
+    println!(
+        "Power   : {}",
+        match capabilities.power_supply.ac_online {
+            Some(true) => "AC",
+            Some(false) => "battery",
+            None => "unknown",
+        }
+    );
+    if let Some(battery) = capabilities.power_supply.batteries.first() {
+        println!(
+            "Battery : {}% {} | charge {}",
+            battery
+                .capacity
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".to_string()),
+            battery.status.as_deref().unwrap_or("?"),
+            battery.charge_type.as_deref().unwrap_or("?"),
+        );
+    }
+    println!(
+        "CPU     : {} cores | governor {} | EPP {} | {}..{} kHz",
+        capabilities.cpu.cpus,
+        capabilities.cpu.governor.as_deref().unwrap_or("?"),
+        capabilities.cpu.epp.as_deref().unwrap_or("?"),
+        capabilities.cpu.scaling_min_khz.unwrap_or(0),
+        capabilities.cpu.scaling_max_khz.unwrap_or(0),
+    );
+    if let Some(gpu) = &capabilities.gpu {
+        println!(
+            "GPU     : {} | {:.0}°C | {:.1} W",
+            gpu.name,
+            gpu.temperature_c.unwrap_or(0.0),
+            gpu.power_draw_w.unwrap_or(0.0),
+        );
+    }
+    println!(
+        "TLP     : {} (active {:?})",
+        capabilities
+            .tlp
+            .version
+            .as_deref()
+            .unwrap_or("not installed"),
+        capabilities.tlp.service_active
+    );
+    println!(
+        "EC      : {} writable power attributes",
         capabilities.ec.attributes.len()
     );
-    if let Some(base) = &capabilities.ec.base {
-        println!("  base: {base}");
-    }
+}
+
+fn print_probe(capabilities: &Capabilities) {
+    print_status(capabilities);
+
+    println!();
+    println!("EC attributes");
     for attribute in &capabilities.ec.attributes {
-        let range = match (attribute.min, attribute.max) {
-            (Some(min), Some(max)) => format!("[{min}..{max}]"),
-            _ => "[?]".to_string(),
-        };
-        let default = attribute
-            .default
-            .map(|value| format!(" default {value}"))
-            .unwrap_or_default();
-        let step = attribute
-            .step
-            .map(|value| format!(" step {value}"))
-            .unwrap_or_default();
         println!(
-            "  {:<20} {:>6} {:<3} {:<14}{}{}",
+            "  {:<20} {:>6} {:<3} [{:?}..{:?}] default {:?} → {}",
             attribute.display_name,
             attribute
                 .current
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "?".to_string()),
             attribute.unit,
-            range,
-            default,
-            step,
+            attribute.min,
+            attribute.max,
+            attribute.default,
+            attribute.path,
         );
     }
 
     println!();
     println!(
-        "Platform: {} | choices: {}",
-        capabilities.platform.current.as_deref().unwrap_or("N/A"),
+        "Platform choices: {}",
         capabilities.platform.choices.join(" ")
     );
     println!(
-        "ACPI    : {} | choices: {}",
-        capabilities
-            .platform
-            .acpi_current
-            .as_deref()
-            .unwrap_or("N/A"),
-        capabilities.platform.acpi_choices.join(" ")
-    );
-
-    println!();
-    for battery in &capabilities.power_supply.batteries {
-        println!(
-            "Battery {}: {}% {} | charge {:?} {:?}",
-            battery.name,
-            battery
-                .capacity
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            battery.status.as_deref().unwrap_or("?"),
-            battery.charge_type,
-            battery.charge_types,
-        );
-    }
-    println!(
-        "AC      : {}",
-        match capabilities.power_supply.ac_online {
-            Some(true) => "online",
-            Some(false) => "battery",
-            None => "unknown",
-        }
-    );
-
-    println!();
-    println!(
-        "CPU     : {} cores | {} | governor {} | EPP {} | {}..{} kHz | boost {:?}",
-        capabilities.cpu.cpus,
-        capabilities.cpu.driver.as_deref().unwrap_or("?"),
-        capabilities.cpu.governor.as_deref().unwrap_or("?"),
-        capabilities.cpu.epp.as_deref().unwrap_or("?"),
-        capabilities.cpu.scaling_min_khz.unwrap_or(0),
-        capabilities.cpu.scaling_max_khz.unwrap_or(0),
-        capabilities.cpu.boost,
-    );
-    println!(
-        "          EPP choices: {}",
-        capabilities.cpu.available_epp.join(" ")
-    );
-
-    println!();
-    match &capabilities.gpu {
-        Some(gpu) => println!(
-            "GPU     : {} | {:.0}°C | {:.0}W | util {:.0}% | mem {:.0}/{:.0} MiB",
-            gpu.name,
-            gpu.temperature_c.unwrap_or(0.0),
-            gpu.power_draw_w.unwrap_or(0.0),
-            gpu.utilization_percent.unwrap_or(0.0),
-            gpu.memory_used_mib.unwrap_or(0.0),
-            gpu.memory_total_mib.unwrap_or(0.0),
-        ),
-        None => println!("GPU     : nvidia-smi not available"),
-    }
-
-    println!();
-    println!(
-        "TLP     : {:?} | service active {:?} enabled {:?} | tlp-pd active {:?}",
-        capabilities.tlp.version,
-        capabilities.tlp.service_active,
-        capabilities.tlp.service_enabled,
-        capabilities.tlp.pd_active,
-    );
-    for (key, value) in &capabilities.tlp.effective {
-        if key.starts_with("CPU_")
-            || key.starts_with("PLATFORM_PROFILE")
-            || key.starts_with("STOP_CHARGE")
-            || key.starts_with("PCIE_ASPM")
-            || key.starts_with("WIFI_PWR")
-        {
-            println!("  {key}={value}");
-        }
-    }
-
-    println!();
-    println!(
-        "Ideapad : {}",
+        "Ideapad: {}",
         capabilities
             .ideapad
-            .base
-            .as_deref()
-            .unwrap_or("not available")
+            .attributes
+            .iter()
+            .map(|attribute| format!(
+                "{}={}",
+                attribute.name,
+                attribute.value.as_deref().unwrap_or("?")
+            ))
+            .collect::<Vec<_>>()
+            .join(" ")
     );
-    for attribute in &capabilities.ideapad.attributes {
-        println!(
-            "  {:<20} {:>6}  {}{}",
-            attribute.name,
-            attribute.value.as_deref().unwrap_or("?"),
-            if attribute.known { "" } else { "(unknown) " },
-            if attribute.writable { "rw" } else { "ro" },
-        );
-    }
 
     println!();
-    println!("LEDs    :");
-    for led in &capabilities.leds {
-        println!(
-            "  {:<28} {}/{}",
-            led.name,
-            led.brightness
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            led.max_brightness
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-        );
-    }
-
-    println!();
-    println!("Sensors : {} hwmon device(s)", capabilities.hwmon.len());
+    println!("Sensors");
     for device in &capabilities.hwmon {
         if device.temperatures.is_empty() && device.fans.is_empty() && device.powers.is_empty() {
             continue;
@@ -251,33 +635,18 @@ fn print_human(capabilities: &Capabilities) {
 
     println!();
     println!(
-        "Legion  : {}",
-        if capabilities.legion.installed {
-            "detected"
-        } else {
-            "not installed (fan curve unavailable)"
-        }
-    );
-    if let Some(path) = &capabilities.legion.powermode_path {
-        println!("  powermode: {:?} ({path})", capabilities.legion.powermode);
-    }
-    if let Some(path) = &capabilities.legion.fancurve_path {
-        println!(
-            "  fancurve: {} ({path})",
-            if capabilities.legion.fancurve.is_some() {
-                "readable"
-            } else {
-                "not readable (try root)"
-            }
-        );
-    }
-
-    println!();
-    println!(
         "Services: tlp {:?} | tlp-pd {:?} | nvidia-powerd {:?} | power-profiles-daemon {:?}",
         capabilities.services.tlp,
         capabilities.services.tlp_pd,
         capabilities.services.nvidia_powerd,
         capabilities.services.power_profiles_daemon,
+    );
+    println!(
+        "Legion  : {}",
+        if capabilities.legion.installed {
+            "detected"
+        } else {
+            "not installed"
+        }
     );
 }
