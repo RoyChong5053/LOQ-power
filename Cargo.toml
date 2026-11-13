@@ -4,6 +4,7 @@ members = [
     "crates/loq-core",
     "crates/loq-cli",
     "crates/loq-helper",
+    "crates/loq-powerd",
     "crates/loq-gui",
 ]
 

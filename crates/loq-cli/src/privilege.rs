@@ -49,10 +49,51 @@ fn find_helper() -> Result<PathBuf> {
         })
 }
 
+fn daemon_owns_name() -> bool {
+    let Ok(connection) = zbus::blocking::Connection::system() else {
+        return false;
+    };
+    let Ok(reply) = connection.call_method(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        Some("org.freedesktop.DBus"),
+        "NameHasOwner",
+        &("org.loq.Power1",),
+    ) else {
+        return false;
+    };
+    reply.body().deserialize::<bool>().unwrap_or(false)
+}
+
+/// Try the running daemon first; a missing daemon is not an error.
+fn try_daemon(request: &ApplyRequest) -> Option<ApplyResponse> {
+    if !daemon_owns_name() {
+        return None;
+    }
+
+    let connection = zbus::blocking::Connection::system().ok()?;
+    let payload = serde_json::to_string(request).ok()?;
+    let reply = connection
+        .call_method(
+            Some("org.loq.Power1"),
+            "/org/loq/Power1",
+            Some("org.loq.Power1"),
+            "Apply",
+            &(payload,),
+        )
+        .ok()?;
+    let json: String = reply.body().deserialize().ok()?;
+    serde_json::from_str(&json).ok()
+}
+
 /// Run `request` with the least privilege that can satisfy it.
 pub fn execute(request: ApplyRequest) -> Result<ApplyResponse> {
     if request.dry_run || is_root() {
         return Ok(apply::apply(&Sysfs::new(), &request));
+    }
+
+    if let Some(response) = try_daemon(&request) {
+        return Ok(response);
     }
 
     let helper = find_helper()?;

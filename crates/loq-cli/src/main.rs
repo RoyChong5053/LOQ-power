@@ -5,6 +5,7 @@ use std::io::Read;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use loq_core::profile::{self, Profile, ProfileFile};
 use loq_core::request::{
     ApplyRequest, ApplyResponse, BatteryRequest, CpuRequest, IdeapadRequest, LedRequest,
 };
@@ -66,6 +67,11 @@ enum Command {
     Led {
         #[command(subcommand)]
         command: LedCommand,
+    },
+    /// List, inspect and apply power profiles
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
     },
     /// Apply a full JSON request (advanced / daemon use)
     Apply {
@@ -144,6 +150,25 @@ enum LedCommand {
     Set { name: String, brightness: i64 },
 }
 
+#[derive(Debug, Subcommand)]
+enum ProfileCommand {
+    /// List available profiles
+    List,
+    /// Show a profile as TOML/JSON
+    Show { name: String },
+    /// Resolve and apply a profile (enters CUSTOM mode as needed)
+    Apply { name: String },
+    /// Save a profile definition from a TOML file
+    Save {
+        name: String,
+        file: std::path::PathBuf,
+    },
+    /// Delete a profile
+    Delete { name: String },
+    /// Print the profile file path in use
+    Path,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let json = cli.json;
@@ -172,6 +197,7 @@ fn main() -> Result<()> {
         Command::Fan { command } => handle_fan(command, json, dry_run)?,
         Command::Cpu { command } => handle_cpu(command, json, dry_run)?,
         Command::Led { command } => handle_led(command, json, dry_run)?,
+        Command::Profile { command } => handle_profile(command, json, dry_run)?,
         Command::Apply { file } => {
             let mut input = String::new();
             match file {
@@ -456,6 +482,85 @@ fn handle_led(command: LedCommand, json: bool, dry_run: bool) -> Result<()> {
             report(execute(request)?, json)?;
         }
     }
+    Ok(())
+}
+
+fn handle_profile(command: ProfileCommand, json: bool, dry_run: bool) -> Result<()> {
+    let path = profile::user_path();
+    let mut file = if path.exists() {
+        ProfileFile::load(&path)?
+    } else {
+        ProfileFile::builtin()
+    };
+
+    match command {
+        ProfileCommand::List => {
+            if json {
+                print_json(&file)?;
+            } else {
+                println!("Profiles ({})", path.display());
+                for name in file.names() {
+                    let profile = &file.profile[&name];
+                    println!(
+                        "  {:<10} platform={} ec={} cpu={}",
+                        name,
+                        profile.platform.as_deref().unwrap_or("-"),
+                        profile.ec.len(),
+                        profile
+                            .cpu
+                            .as_ref()
+                            .and_then(|cpu| cpu.governor.as_deref())
+                            .unwrap_or("-"),
+                    );
+                }
+                println!(
+                    "AC → {} | battery → {} | auto_switch {}",
+                    file.power.ac, file.power.battery, file.power.auto_switch
+                );
+            }
+        }
+        ProfileCommand::Show { name } => {
+            let profile = file.get(&name)?;
+            if json {
+                print_json(profile)?;
+            } else {
+                println!(
+                    "{}",
+                    toml::to_string_pretty(profile).context("cannot render profile")?
+                );
+            }
+        }
+        ProfileCommand::Apply { name } => {
+            let profile = file.get(&name)?.clone();
+            let resolved = profile::resolve(&Sysfs::new(), &profile);
+            for warning in &resolved.warnings {
+                eprintln!("warning: {warning}");
+            }
+            let mut request = resolved.request;
+            request.dry_run = dry_run;
+            report(execute(request)?, json)?;
+        }
+        ProfileCommand::Save { name, file: source } => {
+            let content = std::fs::read_to_string(&source)
+                .with_context(|| format!("cannot read {}", source.display()))?;
+            let profile: Profile = toml::from_str(&content).context("invalid profile TOML")?;
+            file.profile.insert(name.clone(), profile);
+            file.save(&path)?;
+            println!("saved profile {name} to {}", path.display());
+        }
+        ProfileCommand::Delete { name } => {
+            if ProfileFile::builtin().profile.contains_key(&name) {
+                bail!("{name} is a built-in profile and cannot be deleted");
+            }
+            if file.profile.remove(&name).is_none() {
+                bail!("profile {name} not found");
+            }
+            file.save(&path)?;
+            println!("deleted profile {name}");
+        }
+        ProfileCommand::Path => println!("{}", path.display()),
+    }
+
     Ok(())
 }
 

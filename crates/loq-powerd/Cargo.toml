@@ -1,0 +1,24 @@
+[package]
+name = "loq-powerd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "System daemon for LOQ Power"
+
+[[bin]]
+name = "loq-powerd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+libc = "0.2"
+loq-core = { path = "../loq-core" }
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zbus = { version = "5", features = ["tokio"] }

@@ -3,18 +3,55 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { Capabilities } from "./lib/types";
 
-  type Tab = "dashboard" | "power" | "ec" | "system";
+  type Tab = "dashboard" | "power" | "fan" | "system" | "ec";
+
+  interface DaemonState {
+    active_profile: string;
+    power_source: string;
+    thermal_mode: string;
+    ppd_profile: string;
+    holds: number;
+  }
+
+  interface ApplyResponse {
+    ok: boolean;
+    dry_run: boolean;
+    writes: { target: string; previous: string | null; value: string; verified: boolean }[];
+    skipped: string[];
+    errors: string[];
+    warnings?: string[];
+  }
 
   let tab = $state<Tab>("dashboard");
   let capabilities = $state<Capabilities | null>(null);
+  let daemon = $state<DaemonState | null>(null);
+  let daemonChecked = $state(false);
   let loading = $state(true);
+  let busy = $state(false);
   let error = $state("");
+  let notice = $state("");
+  let noticeKind = $state<"ok" | "error" | "info">("info");
 
-  async function refresh() {
-    loading = true;
+  let ecDraft = $state<Record<string, number>>({});
+  let platformTarget = $state("");
+  let dirty = $state(false);
+
+  async function refresh(silent = false) {
+    if (!silent) loading = true;
     error = "";
     try {
-      capabilities = await invoke<Capabilities>("get_capabilities");
+      const next = await invoke<Capabilities>("get_capabilities");
+      capabilities = next;
+
+      if (!dirty || !silent) {
+        const draft: Record<string, number> = {};
+        for (const attribute of next.ec.attributes) {
+          draft[attribute.name] = attribute.current ?? attribute.min ?? 0;
+        }
+        ecDraft = draft;
+        platformTarget = next.platform.current ?? "";
+        dirty = false;
+      }
     } catch (reason) {
       error = String(reason);
     } finally {
@@ -22,7 +59,31 @@
     }
   }
 
-  onMount(refresh);
+  async function loadDaemon() {
+    try {
+      daemon = await invoke<DaemonState | null>("get_daemon_state");
+    } catch (reason) {
+      daemon = null;
+      error = String(reason);
+    } finally {
+      daemonChecked = true;
+    }
+  }
+
+  onMount(async () => {
+    await refresh();
+    await loadDaemon();
+  });
+
+  $effect(() => {
+    const id = setInterval(() => {
+      if (tab === "dashboard") {
+        refresh(true);
+        loadDaemon();
+      }
+    }, 4000);
+    return () => clearInterval(id);
+  });
 
   function number(value: number | null | undefined, digits = 0): string {
     if (value === null || value === undefined || Number.isNaN(value)) return "—";
@@ -40,6 +101,11 @@
     return "未知";
   }
 
+  function daemonLabel(): string {
+    if (!daemonChecked) return "检测中…";
+    return daemon ? "运行中" : "未运行";
+  }
+
   function tlpLabel(): string {
     if (!capabilities?.tlp.installed) return "未安装";
     return capabilities.tlp.service_active ? "运行中" : "已停止";
@@ -55,6 +121,17 @@
     return type ? (map[type] ?? type) : "—";
   }
 
+  function thermalLabel(mode: string | null | undefined): string {
+    const map: Record<string, string> = {
+      "low-power": "静音",
+      balanced: "均衡",
+      performance: "性能",
+      "max-power": "极速",
+      custom: "自定义",
+    };
+    return mode ? (map[mode] ?? mode) : "—";
+  }
+
   function fanSpeed(): string {
     const fan = capabilities?.hwmon
       .flatMap((device) => device.fans)
@@ -67,6 +144,123 @@
     const sensor = preferred?.temperatures[0];
     return sensor ? `${number(sensor.value, 1)} °C` : "—";
   }
+
+  function fanMode(): number | null {
+    const raw = capabilities?.ideapad.attributes.find((attribute) => attribute.name === "fan_mode")?.value;
+    if (raw === null || raw === undefined) return null;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  function kbdBrightness(): number {
+    const led = capabilities?.leds.find((entry) => entry.name.includes("kbd_backlight"));
+    return led?.brightness ?? 0;
+  }
+
+  function kbdMax(): number {
+    const led = capabilities?.leds.find((entry) => entry.name.includes("kbd_backlight"));
+    return led?.max_brightness ?? 2;
+  }
+
+  function markDirty() {
+    dirty = true;
+  }
+
+  function formatResponse(response: ApplyResponse): void {
+    if (response.ok) {
+      const writes = response.writes.length;
+      const skipped = response.skipped.length;
+      noticeKind = "ok";
+      notice = response.dry_run
+        ? `预览通过：将写入 ${writes} 项${skipped ? `，跳过 ${skipped} 项` : ""}。`
+        : `已应用 ${writes} 项${skipped ? `，跳过 ${skipped} 项` : ""}。`;
+    } else {
+      noticeKind = "error";
+      notice = `失败：${response.errors.join("；")}`;
+    }
+  }
+
+  function resetDrafts() {
+    if (!capabilities) return;
+    const draft: Record<string, number> = {};
+    for (const attribute of capabilities.ec.attributes) {
+      draft[attribute.name] = attribute.current ?? attribute.min ?? 0;
+    }
+    ecDraft = draft;
+    platformTarget = capabilities.platform.current ?? "";
+    dirty = false;
+  }
+
+  function buildRequest(dryRun: boolean) {
+    if (!capabilities) return null;
+    const ec: Record<string, number> = {};
+    for (const attribute of capabilities.ec.attributes) {
+      const value = ecDraft[attribute.name];
+      if (value !== undefined && value !== attribute.current) {
+        ec[attribute.name] = value;
+      }
+    }
+
+    const request: Record<string, unknown> = { dry_run: dryRun };
+    if (Object.keys(ec).length > 0) request.ec = ec;
+    if (platformTarget && platformTarget !== capabilities.platform.current) {
+      request.platform = platformTarget;
+    }
+    return request;
+  }
+
+  async function applyEc(dryRun: boolean) {
+    const request = buildRequest(dryRun);
+    if (!request) return;
+    if (Object.keys(request).length === 1) {
+      noticeKind = "info";
+      notice = "没有需要应用的更改。";
+      return;
+    }
+    await send(request);
+  }
+
+  async function send(request: Record<string, unknown>) {
+    busy = true;
+    notice = "";
+    try {
+      const response = await invoke<ApplyResponse>("apply_request", {
+        requestJson: JSON.stringify(request),
+      });
+      formatResponse(response);
+      if (response.ok && !response.dry_run) {
+        await refresh();
+        await loadDaemon();
+      }
+    } catch (reason) {
+      noticeKind = "error";
+      notice = String(reason);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function setFanMode(mode: number, label: string) {
+    if ((mode === 2 || mode === 4) && !confirm(`风扇模式「${label}」会明显变吵，确定要切换吗？`)) {
+      return;
+    }
+    await send({ ideapad: { fan_mode: mode } });
+  }
+
+  async function setChargeType(type: string) {
+    await send({ battery: { charge_type: type } });
+  }
+
+  async function setBacklight(value: number) {
+    await send({ led: { name: "platform::kbd_backlight", brightness: value } });
+  }
+
+  const fanModes = [
+    { mode: 0, label: "静音", hint: "Super Silent" },
+    { mode: 1, label: "标准", hint: "Standard" },
+    { mode: 2, label: "除尘", hint: "Dust Cleaning · 会变吵" },
+    { mode: 4, label: "强散热", hint: "Full Speed · 会变吵" },
+  ];
 </script>
 
 <div class="app">
@@ -79,14 +273,22 @@
       <button class:active={tab === "power"} onclick={() => (tab = "power")}>
         <span class="dot"></span>功率
       </button>
-      <button class:active={tab === "ec"} onclick={() => (tab = "ec")}>
-        <span class="dot"></span>EC 浏览器
+      <button class:active={tab === "fan"} onclick={() => (tab = "fan")}>
+        <span class="dot"></span>风扇 / 电池
       </button>
       <button class:active={tab === "system"} onclick={() => (tab = "system")}>
         <span class="dot"></span>系统
       </button>
+      <button class:active={tab === "ec"} onclick={() => (tab = "ec")}>
+        <span class="dot"></span>EC 浏览器
+      </button>
     </nav>
-    <div class="side-footer">Phase 0 · 只读探测</div>
+    <div class="side-footer">
+      <div class="daemon-state" class:online={daemon}>
+        {daemonLabel()}
+      </div>
+      <div>Phase 4 · 可读写</div>
+    </div>
   </aside>
 
   <main class="content">
@@ -98,9 +300,11 @@
           · {capabilities?.kernel ?? "kernel 未知"}
         </p>
       </div>
-      <button class="primary" onclick={refresh} disabled={loading}>
-        {loading ? "读取中…" : "刷新"}
-      </button>
+      <div class="actions">
+        <button class="ghost" onclick={() => { refresh(); loadDaemon(); }} disabled={loading || busy}>
+          {loading ? "读取中…" : "刷新"}
+        </button>
+      </div>
     </header>
 
     {#if error}
@@ -109,12 +313,21 @@
         <p>{error}</p>
         <p class="hint">请通过 Tauri 启动应用：<code>cargo tauri dev</code>。</p>
       </section>
-    {:else if capabilities}
+    {/if}
+
+    {#if notice}
+      <section class="notice" class:error={noticeKind === "error"} class:ok={noticeKind === "ok"}>
+        <p>{notice}</p>
+        <button class="dismiss" onclick={() => (notice = "")}>关闭</button>
+      </section>
+    {/if}
+
+    {#if capabilities}
       {#if tab === "dashboard"}
         <section class="grid">
           <article class="card">
             <span class="label">热模式</span>
-            <strong>{capabilities.platform.current ?? "未知"}</strong>
+            <strong>{thermalLabel(capabilities.platform.current)}</strong>
             <span class="hint">{capabilities.platform.choices.join(" · ")}</span>
           </article>
           <article class="card">
@@ -142,17 +355,17 @@
           <article class="card">
             <span class="label">风扇</span>
             <strong>{fanSpeed()}</strong>
-            <span class="hint">EC 风扇模式 {capabilities.ideapad.attributes.find((a) => a.name === "fan_mode")?.value ?? "—"}</span>
+            <span class="hint">EC 风扇模式 {fanMode() ?? "—"}</span>
+          </article>
+          <article class="card">
+            <span class="label">守护进程</span>
+            <strong>{daemonLabel()}</strong>
+            <span class="hint">{daemon ? `PPD ${daemon.ppd_profile} · holds ${daemon.holds}` : "使用 pkexec 回退"}</span>
           </article>
           <article class="card">
             <span class="label">TLP</span>
             <strong>{tlpLabel()}</strong>
             <span class="hint">{capabilities.tlp.version ?? "—"} · tlp-pd {capabilities.tlp.pd_active ? "运行" : "停止"}</span>
-          </article>
-          <article class="card">
-            <span class="label">EC 属性</span>
-            <strong>{capabilities.ec.attributes.length}</strong>
-            <span class="hint">kernel 暴露的全部可写功率参数</span>
           </article>
         </section>
 
@@ -183,10 +396,25 @@
           </div>
         </section>
       {:else if tab === "power"}
-        <section class="notice">
-          <strong>只读模式。</strong>
-          写入功能会在 <code>loq-powerd</code> + polkit 完成后开放。
+        <section class="panel">
+          <div class="panel-head">
+            <h2>热模式</h2>
+            <span class="hint">EC 写入需要 CUSTOM，应用时会自动切换并恢复目标模式</span>
+          </div>
+          <div class="mode-row">
+            {#each capabilities.platform.choices as mode}
+              <button
+                class="mode"
+                class:active={platformTarget === mode}
+                onclick={() => { platformTarget = mode; markDirty(); }}
+              >
+                {thermalLabel(mode)}
+                <span>{mode}</span>
+              </button>
+            {/each}
+          </div>
         </section>
+
         <section class="panel">
           <div class="panel-head">
             <h2>EC 功率</h2>
@@ -197,15 +425,20 @@
               <div class="slider-row">
                 <div class="slider-title">
                   <strong>{attribute.display_name}</strong>
-                  <span>{attribute.current ?? "—"} {attribute.unit}</span>
+                  <span class="value">
+                    {ecDraft[attribute.name] ?? attribute.current ?? "—"} {attribute.unit}
+                    {#if attribute.current !== null && ecDraft[attribute.name] !== attribute.current}
+                      <em>（当前 {attribute.current}）</em>
+                    {/if}
+                  </span>
                 </div>
                 <input
                   type="range"
                   min={attribute.min ?? 0}
                   max={attribute.max ?? 100}
                   step={attribute.step ?? 1}
-                  value={attribute.current ?? attribute.min ?? 0}
-                  disabled
+                  bind:value={ecDraft[attribute.name]}
+                  oninput={markDirty}
                 />
                 <div class="slider-meta">
                   <span>{attribute.min ?? "—"}{attribute.unit}</span>
@@ -215,6 +448,152 @@
                 <p class="hint">{attribute.description}</p>
               </div>
             {/each}
+          </div>
+          <div class="panel-actions">
+            <button class="ghost" onclick={resetDrafts} disabled={busy}>还原</button>
+            <button class="ghost" onclick={() => applyEc(true)} disabled={busy}>预览</button>
+            <button class="primary" onclick={() => applyEc(false)} disabled={busy}>
+              {busy ? "应用中…" : "应用"}
+            </button>
+          </div>
+        </section>
+      {:else if tab === "fan"}
+        <section class="panel">
+          <div class="panel-head">
+            <h2>EC 风扇模式</h2>
+            <span class="hint">读回值可能不可靠；重启后不保留</span>
+          </div>
+          <div class="mode-row">
+            {#each fanModes as entry}
+              <button
+                class="mode"
+                class:active={fanMode() === entry.mode}
+                onclick={() => setFanMode(entry.mode, entry.label)}
+                disabled={busy}
+              >
+                {entry.label}
+                <span>{entry.hint}</span>
+              </button>
+            {/each}
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>电池充电</h2>
+            <span class="hint">当前 {battery()?.charge_type ?? "—"}</span>
+          </div>
+          <div class="mode-row">
+            {#each battery()?.charge_types ?? [] as type}
+              <button
+                class="mode"
+                class:active={battery()?.charge_type === type}
+                onclick={() => setChargeType(type)}
+                disabled={busy}
+              >
+                {type === "Fast" ? "快速" : type === "Standard" ? "标准" : type === "Long_Life" ? "长寿" : type}
+                <span>{type}</span>
+              </button>
+            {/each}
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>键盘背光</h2>
+            <span class="hint">0 关闭 · 1 低 · 2 高</span>
+          </div>
+          <div class="slider-row">
+            <input
+              type="range"
+              min="0"
+              max={kbdMax()}
+              step="1"
+              value={kbdBrightness()}
+              onchange={(event) => setBacklight(Number((event.currentTarget as HTMLInputElement).value))}
+              disabled={busy}
+            />
+          </div>
+        </section>
+
+        {#if capabilities.legion.installed}
+          <section class="panel">
+            <div class="panel-head">
+              <h2>LenovoLegionLinux</h2>
+              <span class="hint">检测到 legion_hwmon</span>
+            </div>
+            <div class="sensor-grid">
+              {#each capabilities.legion.fans as sensor}
+                <div class="sensor"><strong>{sensor.label}</strong><span>{number(sensor.value)} {sensor.unit}</span></div>
+              {/each}
+            </div>
+          </section>
+        {:else}
+          <section class="notice">
+            未检测到 LenovoLegionLinux。安装树外模块后可在这里编辑风扇曲线；本工具不会自动加载它。
+          </section>
+        {/if}
+      {:else if tab === "system"}
+        <section class="grid">
+          <article class="card">
+            <span class="label">守护进程</span>
+            <strong>{daemonLabel()}</strong>
+            <span class="hint">{daemon ? `配置档 ${daemon.active_profile}` : "启动 loq-powerd 以启用自动切换"}</span>
+          </article>
+          <article class="card">
+            <span class="label">电源</span>
+            <strong>{acLabel()}</strong>
+            <span class="hint">自动切换 {capabilities.tlp.effective.AUTO_SWITCH ?? "由 loq-powerd 配置决定"}</span>
+          </article>
+          <article class="card">
+            <span class="label">CPU</span>
+            <strong>{capabilities.cpu.cpus} 核</strong>
+            <span class="hint">
+              {capabilities.cpu.driver ?? "—"} · {capabilities.cpu.scaling_min_khz ?? "—"}..{capabilities.cpu.scaling_max_khz ?? "—"} kHz
+            </span>
+          </article>
+          <article class="card">
+            <span class="label">TLP</span>
+            <strong>{tlpLabel()}</strong>
+            <span class="hint">tlp-pd {capabilities.tlp.pd_active ? "运行" : "停止"}</span>
+          </article>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>TLP 状态</h2>
+            <span class="hint">{capabilities.tlp.config_files.join(", ") || "未发现配置文件"}</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>键</th><th>值</th></tr>
+              </thead>
+              <tbody>
+                {#each Object.entries(capabilities.tlp.effective).filter(([key]) =>
+                  key.startsWith("CPU_") ||
+                  key.startsWith("PLATFORM_PROFILE") ||
+                  key.startsWith("STOP_CHARGE") ||
+                  key.startsWith("PCIE_ASPM") ||
+                  key.startsWith("WIFI_PWR") ||
+                  key.startsWith("USB_")
+                ) as [key, value]}
+                  <tr><td class="mono">{key}</td><td class="mono">{value}</td></tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>服务</h2>
+          </div>
+          <div class="service-grid">
+            <span>tlp: {String(capabilities.services.tlp)}</span>
+            <span>tlp-pd: {String(capabilities.services.tlp_pd)}</span>
+            <span>nvidia-powerd: {String(capabilities.services.nvidia_powerd)}</span>
+            <span>power-profiles-daemon: {String(capabilities.services.power_profiles_daemon)}</span>
           </div>
         </section>
       {:else if tab === "ec"}
@@ -262,12 +641,7 @@
           <div class="table-wrap">
             <table>
               <thead>
-                <tr>
-                  <th>属性</th>
-                  <th>值</th>
-                  <th>可写</th>
-                  <th>说明</th>
-                </tr>
+                <tr><th>属性</th><th>值</th><th>可写</th><th>说明</th></tr>
               </thead>
               <tbody>
                 {#each capabilities.ideapad.attributes as attribute}
@@ -290,11 +664,7 @@
           <div class="table-wrap">
             <table>
               <thead>
-                <tr>
-                  <th>名称</th>
-                  <th>亮度</th>
-                  <th>最大</th>
-                </tr>
+                <tr><th>名称</th><th>亮度</th><th>最大</th></tr>
               </thead>
               <tbody>
                 {#each capabilities.leds as led}
@@ -306,68 +676,6 @@
                 {/each}
               </tbody>
             </table>
-          </div>
-        </section>
-      {:else if tab === "system"}
-        <section class="grid">
-          <article class="card">
-            <span class="label">CPU</span>
-            <strong>{capabilities.cpu.cpus} 核</strong>
-            <span class="hint">
-              {capabilities.cpu.driver ?? "—"} · {capabilities.cpu.scaling_min_khz ?? "—"}..{capabilities.cpu.scaling_max_khz ?? "—"} kHz
-            </span>
-          </article>
-          <article class="card">
-            <span class="label">平台配置</span>
-            <strong>{capabilities.platform.current ?? "—"}</strong>
-            <span class="hint">choices: {capabilities.platform.choices.join(" ")}</span>
-          </article>
-          <article class="card">
-            <span class="label">TLP</span>
-            <strong>{tlpLabel()}</strong>
-            <span class="hint">enabled {String(capabilities.tlp.service_enabled)} · tlp-pd {String(capabilities.tlp.pd_active)}</span>
-          </article>
-          <article class="card">
-            <span class="label">Legion Linux</span>
-            <strong>{capabilities.legion.installed ? "已检测" : "未安装"}</strong>
-            <span class="hint">{capabilities.legion.installed ? "风扇曲线可用" : "风扇曲线不可用"}</span>
-          </article>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>TLP 生效配置</h2>
-            <span class="hint">{capabilities.tlp.config_files.join(", ") || "未发现配置文件"}</span>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>键</th>
-                  <th>值</th>
-                </tr>
-              </thead>
-              <tbody>
-                {#each Object.entries(capabilities.tlp.effective) as [key, value]}
-                  <tr>
-                    <td class="mono">{key}</td>
-                    <td class="mono">{value}</td>
-                  </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>服务</h2>
-          </div>
-          <div class="service-grid">
-            <span>TLP: {String(capabilities.services.tlp)}</span>
-            <span>tlp-pd: {String(capabilities.services.tlp_pd)}</span>
-            <span>nvidia-powerd: {String(capabilities.services.nvidia_powerd)}</span>
-            <span>power-profiles-daemon: {String(capabilities.services.power_profiles_daemon)}</span>
           </div>
         </section>
       {/if}

@@ -410,3 +410,138 @@ tbody tr:last-child td {
     padding: 20px 16px 40px;
   }
 }
+
+/* Write controls */
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ghost {
+  padding: 9px 16px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ghost:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ghost:disabled,
+.primary:disabled,
+.mode:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mode-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  padding: 16px 18px;
+}
+
+.mode {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--panel-alt);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.mode span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.mode:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.mode.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+}
+
+.value em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.daemon-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  color: var(--muted);
+}
+
+.daemon-state::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.daemon-state.online {
+  color: var(--ok);
+}
+
+.daemon-state.online::before {
+  background: var(--ok);
+}
+
+.notice {
+  position: relative;
+}
+
+.notice.ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+}
+
+.notice.ok p {
+  color: var(--ok);
+  margin: 0;
+}
+
+.notice.error p {
+  margin: 0;
+}
+
+.notice .dismiss {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.notice p {
+  margin: 0;
+}

@@ -10,6 +10,7 @@ pub mod leds;
 pub mod legion;
 pub mod platform;
 pub mod probe;
+pub mod profile;
 pub mod request;
 pub mod services;
 pub mod sysfs;

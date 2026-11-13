@@ -1,0 +1,84 @@
+mod interfaces;
+mod polkit;
+mod state;
+mod watcher;
+
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+
+use anyhow::{Context, Result, bail};
+use loq_core::Sysfs;
+use loq_core::profile::ProfileFile;
+use tracing_subscriber::EnvFilter;
+
+use crate::state::State;
+
+pub fn config_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("LOQ_POWER_CONFIG") {
+        return PathBuf::from(path);
+    }
+    loq_core::profile::system_path()
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    if unsafe { libc::geteuid() } != 0 {
+        bail!("loq-powerd must run as root (start it through systemd)");
+    }
+
+    let path = config_path();
+    let profiles = if path.exists() {
+        ProfileFile::load(&path).with_context(|| format!("cannot load {}", path.display()))?
+    } else {
+        tracing::warn!(
+            path = %path.display(),
+            "configuration file not found, using built-in profiles"
+        );
+        ProfileFile::builtin()
+    };
+
+    let state = Arc::new(RwLock::new(State::new(Sysfs::new(), profiles)));
+
+    let connection = zbus::connection::Builder::system()?
+        .name("org.loq.Power1")?
+        .serve_at(
+            "/org/loq/Power1",
+            interfaces::PowerIface {
+                state: state.clone(),
+            },
+        )?
+        .serve_at(
+            "/net/hadess/PowerProfiles",
+            interfaces::PpdIface {
+                state: state.clone(),
+            },
+        )?
+        .build()
+        .await
+        .context("cannot connect to the system bus")?;
+
+    match connection.request_name("net.hadess.PowerProfiles").await {
+        Ok(()) => tracing::info!("owning net.hadess.PowerProfiles"),
+        Err(error) => tracing::warn!(
+            %error,
+            "net.hadess.PowerProfiles is already owned; desktop power widgets will keep using the other service"
+        ),
+    }
+
+    tokio::spawn(watcher::watch(state.clone(), connection.clone()));
+
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        config = %path.display(),
+        "loq-powerd ready"
+    );
+
+    std::future::pending::<()>().await;
+    Ok(())
+}

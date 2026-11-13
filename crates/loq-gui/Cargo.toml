@@ -19,3 +19,4 @@ loq-core = { path = "../loq-core" }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = [] }
+zbus = { version = "5", features = ["tokio"] }
