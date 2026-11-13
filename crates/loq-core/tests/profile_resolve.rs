@@ -108,3 +108,21 @@ fn drops_unknown_governors_with_a_warning() {
         resolved.warnings
     );
 }
+
+#[test]
+fn auto_switch_defaults_on() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("profiles.toml");
+    fs::write(&path, "[profile.\"测试\"]\nplatform = \"balanced\"\n").unwrap();
+
+    let file = profile::ProfileFile::load(&path).unwrap();
+    assert!(file.power.auto_switch, "auto_switch must default to true");
+
+    fs::write(
+        &path,
+        "[power]\nauto_switch = false\n\n[profile.\"测试\"]\nplatform = \"balanced\"\n",
+    )
+    .unwrap();
+    let file = profile::ProfileFile::load(&path).unwrap();
+    assert!(!file.power.auto_switch);
+}

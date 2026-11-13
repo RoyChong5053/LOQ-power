@@ -18,7 +18,8 @@ Lenovo LOQ 15ARP9（83JC）的 Linux 电源与 EC 控制工具。Rust 实现，�
 - **省电**：WiFi 省电、USB autosuspend、PCIe ASPM、NVMe runtime PM、HDA 省电、
   NMI watchdog；可在 GUI「省电」页单独调整，也会随配置档应用
 - **配置档**：内置省电/平衡/性能/自定义，可自定义 TOML
-- **自动切换**：AC/电池变化、开机、挂起唤醒后重新应用配置档
+- **自动切换**：默认开启；AC/电池变化、开机、挂起唤醒后重新应用配置档。
+  TLP 仍在运行时守护进程进入 standby，不会与 TLP 争抢写入
 - **吸收 TLP**：CPU 调频、PCIe ASPM、WiFi 省电、USB autosuspend、NVMe PM、
   HDA 省电、NMI watchdog；提供一键接管与回滚
 - **桌面兼容**：实现 `net.hadess.PowerProfiles`，停用 `tlp-pd` 后 GNOME/KDE

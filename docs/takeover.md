@@ -14,7 +14,8 @@ PCIe ASPM、WiFi 省电、USB autosuspend 等设置被吸收进配置档的
 
 安装脚本不会启用 `loq-powerd.service`，仓库也不提供 D-Bus 自动激活文件。
 `loq-powerd` 的单元带有 `Conflicts=tlp.service tlp-pd.service`，因此只有显式启动
-它才会停用 TLP——而唯一的正常入口就是本页的接管命令或 GUI 向导。
+它才会停用 TLP——而唯一的正常入口就是本页的接管命令或 GUI 向导。若守护进程在
+TLP 仍运行时被直接启动，它会进入 standby：只读状态可用，但不会自动应用配置档。
 
 ## 三种入口
 

@@ -7,7 +7,7 @@ use crate::state::{PowerSource, SharedState};
 
 /// Apply the profile mapped to `source` and report the result.
 fn switch_to(state: &SharedState, source: PowerSource) {
-    let (profile_name, auto_switch) = {
+    let (profile_name, auto_switch, standby) = {
         let state = state.read().expect("state lock poisoned");
         let power = &state.profiles.power;
         (
@@ -17,9 +17,14 @@ fn switch_to(state: &SharedState, source: PowerSource) {
                 PowerSource::Unknown => String::new(),
             },
             power.auto_switch,
+            state.standby,
         )
     };
 
+    if standby {
+        tracing::debug!("standby: TLP still manages power; skipping automatic switch");
+        return;
+    }
     if !auto_switch || profile_name.is_empty() {
         return;
     }
@@ -87,10 +92,18 @@ pub async fn watch_resume(state: SharedState, conn: zbus::Connection) {
         // Give drivers a moment to finish resuming before asserting EC state.
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let (profile, source) = {
+        let (profile, source, standby) = {
             let state = state.read().expect("state lock poisoned");
-            (state.active_profile.clone(), state.power_source)
+            (
+                state.active_profile.clone(),
+                state.power_source,
+                state.standby,
+            )
         };
+        if standby {
+            tracing::info!("standby: skipping resume re-apply while TLP is active");
+            continue;
+        }
         if !profile.is_empty() {
             let (response, warnings) = {
                 let state = state.read().expect("state lock poisoned");
@@ -133,6 +146,11 @@ pub async fn watch(state: SharedState, conn: zbus::Connection) {
         if let Err(error) = publish(&conn, &state).await {
             tracing::warn!("cannot publish startup state: {error}");
         }
+    }
+    if state.read().expect("state lock poisoned").standby {
+        tracing::warn!(
+            "TLP is still active; automatic profile switching is suspended until the takeover wizard runs"
+        );
     }
 
     loop {

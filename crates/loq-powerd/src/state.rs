@@ -76,6 +76,10 @@ pub struct State {
     /// deriving the profile from the (already modified) thermal mode.
     pub ppd_base: String,
     pub holds: Vec<Hold>,
+    /// True when TLP was still active when the daemon started. Automatic
+    /// switching is suspended so the two managers never fight; the takeover
+    /// wizard clears it (or a restart after TLP is disabled).
+    pub standby: bool,
     next_cookie: u32,
 }
 
@@ -89,6 +93,7 @@ impl State {
         let thermal = platform::detect(&fs)
             .current
             .unwrap_or_else(|| "balanced".to_string());
+        let standby = loq_core::services::is_active("tlp.service") == Some(true);
         Self {
             fs,
             profiles,
@@ -96,6 +101,7 @@ impl State {
             power_source,
             ppd_base: thermal_to_ppd(&thermal).to_string(),
             holds: Vec::new(),
+            standby,
             next_cookie: 1,
         }
     }
@@ -186,6 +192,7 @@ impl State {
             "ppd_profile": self.ppd_active(),
             "battery": battery,
             "holds": self.holds.len(),
+            "standby": self.standby,
         })
         .to_string()
     }

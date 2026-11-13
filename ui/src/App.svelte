@@ -11,6 +11,7 @@
     thermal_mode: string;
     ppd_profile: string;
     holds: number;
+    standby: boolean;
   }
 
   interface PowerSavingState {
@@ -1134,7 +1135,13 @@
           <article class="card">
             <span class="label">守护进程</span>
             <strong>{daemonLabel()}</strong>
-            <span class="hint">{daemon ? `配置档 ${daemon.active_profile}` : "启动 loq-powerd 以启用自动切换"}</span>
+            <span class="hint">
+              {daemon
+                ? daemon.standby
+                  ? "TLP 仍在运行，自动切换已暂停"
+                  : `配置档 ${daemon.active_profile}`
+                : "启动 loq-powerd 以启用自动切换"}
+            </span>
           </article>
           <article class="card">
             <span class="label">电源</span>

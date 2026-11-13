@@ -50,7 +50,10 @@ pub struct Profile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PowerConfig {
-    #[serde(default)]
+    /// Switching on AC/battery changes is on by default: it is the whole
+    /// point of running a daemon instead of a one-shot CLI. Set it to `false`
+    /// in `[power]` to opt out.
+    #[serde(default = "default_auto_switch")]
     pub auto_switch: bool,
     #[serde(default = "default_ac_profile")]
     pub ac: String,
@@ -58,10 +61,14 @@ pub struct PowerConfig {
     pub battery: String,
 }
 
+fn default_auto_switch() -> bool {
+    true
+}
+
 impl Default for PowerConfig {
     fn default() -> Self {
         Self {
-            auto_switch: false,
+            auto_switch: default_auto_switch(),
             ac: default_ac_profile(),
             battery: default_battery_profile(),
         }

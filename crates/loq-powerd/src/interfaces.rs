@@ -424,6 +424,10 @@ impl PowerIface {
         .map_err(|error| fdo::Error::Failed(format!("takeover task failed: {error}")))?
         .map_err(|error| fdo::Error::Failed(error.to_string()))?;
 
+        {
+            let mut state = self.state.write().expect("state lock poisoned");
+            state.standby = false;
+        }
         let _ = publish(conn, &self.state).await;
         Ok(to_json(&report))
     }
