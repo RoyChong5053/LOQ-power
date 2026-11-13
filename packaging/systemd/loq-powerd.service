@@ -6,7 +6,7 @@ Wants=dbus.service
 # TLP must be disabled through the explicit takeover wizard, not by starting
 # this unit. Conflicts= only prevents both from running at the same time.
 Conflicts=tlp.service tlp-pd.service
-ConditionPathExists=/sys/class/firmware-attributes/lenovo-wmi-other-0/attributes
+ConditionPathExistsGlob=/sys/class/firmware-attributes/lenovo-wmi-other-*/attributes
 
 [Service]
 Type=simple

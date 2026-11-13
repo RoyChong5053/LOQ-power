@@ -350,6 +350,19 @@ impl PowerIface {
         Ok(to_json(&response))
     }
 
+    /// Profile names and the AC/battery mapping.
+    fn get_profiles(&self) -> String {
+        let state = self.state.read().expect("state lock poisoned");
+        serde_json::json!({
+            "names": state.profiles.names(),
+            "active_profile": state.active_profile,
+            "ac": state.profiles.power.ac,
+            "battery": state.profiles.power.battery,
+            "auto_switch": state.profiles.power.auto_switch,
+        })
+        .to_string()
+    }
+
     /// TLP hand-over status and rollback availability.
     fn get_takeover_status(&self) -> String {
         let status =

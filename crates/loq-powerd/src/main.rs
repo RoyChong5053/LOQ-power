@@ -20,6 +20,26 @@ pub fn config_path() -> PathBuf {
     loq_core::profile::system_path()
 }
 
+/// Keep trying to own `net.hadess.PowerProfiles`.
+///
+/// The name is usually held by `tlp-pd` until the takeover wizard stops it.
+/// Retrying means a daemon that was already running during the takeover picks
+/// the name up without needing a restart.
+async fn claim_power_profiles(connection: zbus::Connection) {
+    loop {
+        match connection.request_name("net.hadess.PowerProfiles").await {
+            Ok(()) => {
+                tracing::info!("owning net.hadess.PowerProfiles");
+                return;
+            }
+            Err(error) => {
+                tracing::debug!(%error, "net.hadess.PowerProfiles is owned elsewhere; retrying");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -63,13 +83,7 @@ async fn main() -> Result<()> {
         .await
         .context("cannot connect to the system bus")?;
 
-    match connection.request_name("net.hadess.PowerProfiles").await {
-        Ok(()) => tracing::info!("owning net.hadess.PowerProfiles"),
-        Err(error) => tracing::warn!(
-            %error,
-            "net.hadess.PowerProfiles is already owned; desktop power widgets will keep using the other service"
-        ),
-    }
+    tokio::spawn(claim_power_profiles(connection.clone()));
 
     tokio::spawn(watcher::watch(state.clone(), connection.clone()));
     tokio::spawn(watcher::watch_resume(state.clone(), connection.clone()));

@@ -95,6 +95,18 @@ async fn apply_request(request_json: String) -> Result<serde_json::Value, String
     serde_json::from_str(&raw).map_err(|error| format!("守护进程返回了无效 JSON: {error}"))
 }
 
+/// Profile names and the AC/battery mapping.
+#[tauri::command]
+async fn get_profiles() -> Result<serde_json::Value, String> {
+    call_json("GetProfiles", &()).await
+}
+
+/// Apply a named profile through the daemon.
+#[tauri::command]
+async fn apply_profile(name: String, dry_run: bool) -> Result<serde_json::Value, String> {
+    call_json("ApplyProfile", &(name, dry_run)).await
+}
+
 /// TLP hand-over status (includes the rollback record check).
 #[tauri::command]
 async fn get_takeover_status() -> Result<serde_json::Value, String> {
@@ -143,6 +155,8 @@ pub fn run() {
             get_version,
             get_daemon_state,
             apply_request,
+            get_profiles,
+            apply_profile,
             get_takeover_status,
             takeover,
             restore_tlp

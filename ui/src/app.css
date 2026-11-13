@@ -614,3 +614,40 @@ tbody tr:last-child td {
 .curve-note {
   padding: 0 18px 16px;
 }
+
+/* CPU governor / EPP / frequency form */
+.cpu-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  padding: 16px 18px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.field select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-alt);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.field select:disabled {
+  opacity: 0.6;
+}
+
+.field strong {
+  color: var(--accent);
+}
+
+.field em {
+  font-style: normal;
+  font-weight: 400;
+}

@@ -13,6 +13,14 @@
     holds: number;
   }
 
+  interface ProfileState {
+    names: string[];
+    active_profile: string;
+    ac: string;
+    battery: string;
+    auto_switch: boolean;
+  }
+
   interface TakeoverStatus {
     taken_over: boolean;
     rollback_available: boolean;
@@ -55,7 +63,11 @@
   let dirty = $state(false);
   let takeoverStatus = $state<TakeoverStatus | null>(null);
   let wizardBusy = $state(false);
+  let profiles = $state<ProfileState | null>(null);
   let curveDraft = $state<FanCurve | null>(null);
+  let cpuDraft = $state<
+    { governor: string; epp: string; maxMhz: number; boost: boolean } | null
+  >(null);
 
   async function refresh(silent = false) {
     if (!silent) loading = true;
@@ -77,6 +89,12 @@
         } else {
           curveDraft = null;
         }
+        cpuDraft = {
+          governor: next.cpu.governor ?? "",
+          epp: next.cpu.epp ?? "",
+          maxMhz: Math.round((next.cpu.scaling_max_khz ?? next.cpu.cpuinfo_max_khz ?? 4000000) / 1000),
+          boost: next.cpu.boost ?? true,
+        };
       }
     } catch (reason) {
       error = String(reason);
@@ -96,6 +114,38 @@
     }
   }
 
+  async function loadProfiles() {
+    try {
+      profiles = await invoke<ProfileState>("get_profiles");
+    } catch {
+      profiles = null;
+    }
+  }
+
+  async function applyProfile(name: string) {
+    if (!profiles || name === profiles.active_profile) return;
+    busy = true;
+    notice = "";
+    try {
+      const response = await invoke<ApplyResponse>("apply_profile", { name, dryRun: false });
+      if (response.ok) {
+        noticeKind = "ok";
+        notice = `已切换到配置档「${name}」。`;
+        await refresh();
+        await loadDaemon();
+        await loadProfiles();
+      } else {
+        noticeKind = "error";
+        notice = `切换失败：${response.errors.join("；")}`;
+      }
+    } catch (reason) {
+      noticeKind = "error";
+      notice = String(reason);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function loadTakeover() {
     try {
       takeoverStatus = await invoke<TakeoverStatus>("get_takeover_status");
@@ -107,6 +157,7 @@
   onMount(async () => {
     await refresh();
     await loadDaemon();
+    await loadProfiles();
     await loadTakeover();
   });
 
@@ -115,6 +166,7 @@
       if (tab === "dashboard") {
         refresh(true);
         loadDaemon();
+        loadProfiles();
       }
     }, 4000);
     return () => clearInterval(id);
@@ -212,6 +264,10 @@
     } else {
       noticeKind = "error";
       notice = `失败：${response.errors.join("；")}`;
+    }
+
+    if (response.warnings && response.warnings.length > 0) {
+      notice += ` 提示：${response.warnings.join("；")}`;
     }
   }
 
@@ -343,6 +399,37 @@
     await send({ battery: { charge_type: type } });
   }
 
+  function cpuMinMhz(): number {
+    return Math.round((capabilities?.cpu.cpuinfo_min_khz ?? 400000) / 1000);
+  }
+
+  function cpuMaxMhz(): number {
+    return Math.round((capabilities?.cpu.cpuinfo_max_khz ?? 5000000) / 1000);
+  }
+
+  async function applyCpu() {
+    if (!cpuDraft || !capabilities) return;
+    const cpu: Record<string, unknown> = {};
+    if (cpuDraft.governor && cpuDraft.governor !== capabilities.cpu.governor) {
+      cpu.governor = cpuDraft.governor;
+    }
+    if (cpuDraft.epp && cpuDraft.epp !== capabilities.cpu.epp) {
+      cpu.epp = cpuDraft.epp;
+    }
+    if (Math.round(cpuDraft.maxMhz * 1000) !== capabilities.cpu.scaling_max_khz) {
+      cpu.max_khz = Math.round(cpuDraft.maxMhz * 1000);
+    }
+    if (cpuDraft.boost !== capabilities.cpu.boost) {
+      cpu.boost = cpuDraft.boost;
+    }
+    if (Object.keys(cpu).length === 0) {
+      noticeKind = "info";
+      notice = "CPU 设置没有变化。";
+      return;
+    }
+    await send({ cpu });
+  }
+
   async function setLegionFullspeed(enabled: boolean) {
     await send({ legion: { fullspeed: enabled } });
   }
@@ -433,7 +520,7 @@
         </p>
       </div>
       <div class="actions">
-        <button class="ghost" onclick={() => { refresh(); loadDaemon(); loadTakeover(); }} disabled={loading || busy}>
+        <button class="ghost" onclick={() => { refresh(); loadDaemon(); loadProfiles(); loadTakeover(); }} disabled={loading || busy}>
           {loading ? "读取中…" : "刷新"}
         </button>
       </div>
@@ -501,6 +588,35 @@
           </article>
         </section>
 
+        {#if profiles}
+          <section class="panel">
+            <div class="panel-head">
+              <h2>配置档</h2>
+              <span class="hint">
+                当前「{profiles.active_profile}」· AC → {profiles.ac} · 电池 → {profiles.battery}
+                {profiles.auto_switch ? "· 自动切换已开启" : ""}
+              </span>
+            </div>
+            <div class="mode-row">
+              {#each profiles.names as name}
+                <button
+                  class="mode"
+                  class:active={name === profiles.active_profile}
+                  onclick={() => applyProfile(name)}
+                  disabled={busy}
+                >
+                  {name}
+                  <span>{name === profiles.ac ? "AC 默认" : name === profiles.battery ? "电池默认" : "配置档"}</span>
+                </button>
+              {/each}
+            </div>
+          </section>
+        {:else}
+          <section class="notice">
+            loq-powerd 未运行，无法切换配置档。启动守护进程后这里会列出可用配置档。
+          </section>
+        {/if}
+
         <section class="panel">
           <div class="panel-head">
             <h2>传感器</h2>
@@ -545,6 +661,65 @@
               </button>
             {/each}
           </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>CPU 频率与能效</h2>
+            <span class="hint">
+              {capabilities.cpu.driver ?? "cpufreq"} · {capabilities.cpu.amd_pstate_status ?? "—"}
+            </span>
+          </div>
+          {#if cpuDraft}
+            <div class="cpu-form">
+              <label class="field">
+                <span>调频策略</span>
+                <select bind:value={cpuDraft.governor} onchange={markDirty}>
+                  {#each capabilities.cpu.available_governors as governor}
+                    <option value={governor}>{governor}</option>
+                  {/each}
+                </select>
+              </label>
+              <label class="field">
+                <span>能效偏好 (EPP)</span>
+                <select bind:value={cpuDraft.epp} onchange={markDirty} disabled={capabilities.cpu.available_epp.length === 0}>
+                  {#each capabilities.cpu.available_epp as epp}
+                    <option value={epp}>{epp}</option>
+                  {/each}
+                </select>
+                {#if capabilities.cpu.available_epp.length === 0}
+                  <em class="hint">当前电源状态不开放 EPP</em>
+                {/if}
+              </label>
+              <label class="field">
+                <span>
+                  最高频率
+                  <strong>{cpuDraft.maxMhz} MHz</strong>
+                </span>
+                <input
+                  type="range"
+                  min={cpuMinMhz()}
+                  max={cpuMaxMhz()}
+                  step="100"
+                  bind:value={cpuDraft.maxMhz}
+                  oninput={markDirty}
+                />
+                <em class="hint">
+                  当前 {Math.round((capabilities.cpu.scaling_max_khz ?? 0) / 1000)} MHz ·
+                  硬件范围 {cpuMinMhz()}–{cpuMaxMhz()} MHz
+                </em>
+              </label>
+              <label class="toggle">
+                <input type="checkbox" bind:checked={cpuDraft.boost} onchange={markDirty} />
+                CPU Boost
+              </label>
+            </div>
+            <div class="panel-actions">
+              <button class="primary" onclick={applyCpu} disabled={busy}>
+                {busy ? "应用中…" : "应用 CPU 设置"}
+              </button>
+            </div>
+          {/if}
         </section>
 
         <section class="panel">
